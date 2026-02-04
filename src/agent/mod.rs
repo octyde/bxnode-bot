@@ -13,6 +13,9 @@ pub mod context;
 pub mod execution;
 pub mod tools;
 
+#[cfg(test)]
+mod tools_tests;
+
 /// Agent configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {

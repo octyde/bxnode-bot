@@ -2,6 +2,9 @@
 //!
 //! Sessions are stored as JSONL transcript files.
 
+#[cfg(test)]
+mod tests;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

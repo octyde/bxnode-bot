@@ -177,6 +177,9 @@ fn default_ollama_url() -> String {
     "http://localhost:11434".to_string()
 }
 
+#[cfg(test)]
+mod tests;
+
 impl Config {
     /// Load configuration from a file
     pub fn load<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {

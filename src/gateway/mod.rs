@@ -6,6 +6,9 @@ pub mod ws;
 
 pub mod methods;
 
+#[cfg(test)]
+mod protocol_tests;
+
 use anyhow::Result;
 use axum::{
     routing::{get, post},

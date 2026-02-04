@@ -1,0 +1,311 @@
+//! Unit tests for the tools module
+
+use super::tools::*;
+use async_trait::async_trait;
+use serde_json::json;
+
+/// Mock tool for testing
+struct MockTool {
+    name: String,
+    description: String,
+    should_succeed: bool,
+}
+
+impl MockTool {
+    fn new(name: &str, description: &str, should_succeed: bool) -> Self {
+        Self {
+            name: name.to_string(),
+            description: description.to_string(),
+            should_succeed,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for MockTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "input": { "type": "string" }
+            },
+            "required": ["input"]
+        })
+    }
+
+    async fn execute(&self, input: serde_json::Value) -> anyhow::Result<ToolResult> {
+        if self.should_succeed {
+            Ok(ToolResult {
+                success: true,
+                content: format!("Executed {} with input: {:?}", self.name, input),
+                error: None,
+            })
+        } else {
+            Ok(ToolResult {
+                success: false,
+                content: String::new(),
+                error: Some("Mock execution failed".to_string()),
+            })
+        }
+    }
+}
+
+#[test]
+fn test_tool_definition_creation() {
+    let def = ToolDefinition {
+        name: "weather".to_string(),
+        description: "Get weather information".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "location": { "type": "string" }
+            }
+        }),
+    };
+
+    assert_eq!(def.name, "weather");
+    assert_eq!(def.description, "Get weather information");
+    assert!(def.input_schema.is_object());
+}
+
+#[test]
+fn test_tool_definition_serialization() {
+    let def = ToolDefinition {
+        name: "search".to_string(),
+        description: "Search the web".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string" }
+            },
+            "required": ["query"]
+        }),
+    };
+
+    let json = serde_json::to_value(&def).unwrap();
+
+    assert_eq!(json["name"], "search");
+    assert_eq!(json["description"], "Search the web");
+    assert!(json["input_schema"]["properties"]["query"].is_object());
+}
+
+#[test]
+fn test_tool_result_success() {
+    let result = ToolResult {
+        success: true,
+        content: "Operation completed".to_string(),
+        error: None,
+    };
+
+    assert!(result.success);
+    assert_eq!(result.content, "Operation completed");
+    assert!(result.error.is_none());
+}
+
+#[test]
+fn test_tool_result_failure() {
+    let result = ToolResult {
+        success: false,
+        content: String::new(),
+        error: Some("Permission denied".to_string()),
+    };
+
+    assert!(!result.success);
+    assert!(result.content.is_empty());
+    assert_eq!(result.error, Some("Permission denied".to_string()));
+}
+
+#[test]
+fn test_tool_result_serialization() {
+    let result = ToolResult {
+        success: true,
+        content: "Result data".to_string(),
+        error: None,
+    };
+
+    let json = serde_json::to_value(&result).unwrap();
+
+    assert_eq!(json["success"], true);
+    assert_eq!(json["content"], "Result data");
+}
+
+#[test]
+fn test_tool_registry_new() {
+    let registry = ToolRegistry::new();
+
+    assert!(registry.list().is_empty());
+}
+
+#[test]
+fn test_tool_registry_register_and_get() {
+    let mut registry = ToolRegistry::new();
+    let tool = Box::new(MockTool::new("test_tool", "A test tool", true));
+
+    registry.register(tool);
+
+    let retrieved = registry.get("test_tool");
+    assert!(retrieved.is_some());
+    assert_eq!(retrieved.unwrap().name(), "test_tool");
+}
+
+#[test]
+fn test_tool_registry_get_nonexistent() {
+    let registry = ToolRegistry::new();
+
+    let retrieved = registry.get("nonexistent");
+    assert!(retrieved.is_none());
+}
+
+#[test]
+fn test_tool_registry_list() {
+    let mut registry = ToolRegistry::new();
+
+    registry.register(Box::new(MockTool::new("tool1", "First tool", true)));
+    registry.register(Box::new(MockTool::new("tool2", "Second tool", true)));
+    registry.register(Box::new(MockTool::new("tool3", "Third tool", false)));
+
+    let definitions = registry.list();
+
+    assert_eq!(definitions.len(), 3);
+
+    // Check that all tools are in the list (order may vary due to HashMap)
+    let names: Vec<&str> = definitions.iter().map(|d| d.name.as_str()).collect();
+    assert!(names.contains(&"tool1"));
+    assert!(names.contains(&"tool2"));
+    assert!(names.contains(&"tool3"));
+}
+
+#[test]
+fn test_tool_registry_register_overwrites() {
+    let mut registry = ToolRegistry::new();
+
+    registry.register(Box::new(MockTool::new("duplicate", "First version", true)));
+    registry.register(Box::new(MockTool::new("duplicate", "Second version", false)));
+
+    let definitions = registry.list();
+    assert_eq!(definitions.len(), 1);
+
+    let tool = registry.get("duplicate").unwrap();
+    assert_eq!(tool.description(), "Second version");
+}
+
+#[tokio::test]
+async fn test_mock_tool_execute_success() {
+    let tool = MockTool::new("success_tool", "Always succeeds", true);
+
+    let result = tool.execute(json!({"input": "test"})).await.unwrap();
+
+    assert!(result.success);
+    assert!(result.content.contains("success_tool"));
+    assert!(result.error.is_none());
+}
+
+#[tokio::test]
+async fn test_mock_tool_execute_failure() {
+    let tool = MockTool::new("fail_tool", "Always fails", false);
+
+    let result = tool.execute(json!({"input": "test"})).await.unwrap();
+
+    assert!(!result.success);
+    assert!(result.content.is_empty());
+    assert!(result.error.is_some());
+}
+
+#[tokio::test]
+async fn test_tool_registry_execute_through_get() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(MockTool::new("exec_tool", "Executable tool", true)));
+
+    let tool = registry.get("exec_tool").unwrap();
+    let result = tool.execute(json!({"input": "hello"})).await.unwrap();
+
+    assert!(result.success);
+}
+
+#[test]
+fn test_tool_trait_implementation() {
+    let tool = MockTool::new("trait_test", "Testing trait methods", true);
+
+    assert_eq!(tool.name(), "trait_test");
+    assert_eq!(tool.description(), "Testing trait methods");
+
+    let schema = tool.input_schema();
+    assert!(schema.is_object());
+    assert!(schema["properties"]["input"].is_object());
+}
+
+#[test]
+fn test_tool_definition_deserialization() {
+    let json = json!({
+        "name": "calculator",
+        "description": "Perform calculations",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "expression": { "type": "string" }
+            }
+        }
+    });
+
+    let def: ToolDefinition = serde_json::from_value(json).unwrap();
+
+    assert_eq!(def.name, "calculator");
+    assert_eq!(def.description, "Perform calculations");
+}
+
+#[test]
+fn test_tool_result_deserialization() {
+    let json = json!({
+        "success": true,
+        "content": "42",
+        "error": null
+    });
+
+    let result: ToolResult = serde_json::from_value(json).unwrap();
+
+    assert!(result.success);
+    assert_eq!(result.content, "42");
+    assert!(result.error.is_none());
+}
+
+#[test]
+fn test_tool_registry_default() {
+    let registry = ToolRegistry::default();
+
+    assert!(registry.list().is_empty());
+}
+
+#[test]
+fn test_tool_definition_with_complex_schema() {
+    let def = ToolDefinition {
+        name: "api_call".to_string(),
+        description: "Make an API call".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "url": { "type": "string", "format": "uri" },
+                "method": { "type": "string", "enum": ["GET", "POST", "PUT", "DELETE"] },
+                "headers": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" }
+                },
+                "body": { "type": "object" }
+            },
+            "required": ["url", "method"]
+        }),
+    };
+
+    let json = serde_json::to_value(&def).unwrap();
+    let restored: ToolDefinition = serde_json::from_value(json).unwrap();
+
+    assert_eq!(restored.name, "api_call");
+    assert!(restored.input_schema["properties"]["method"]["enum"].is_array());
+}
