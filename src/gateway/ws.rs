@@ -1,19 +1,24 @@
 //! WebSocket handler for RPC communication
 
 use axum::{
-    extract::ws::{Message, WebSocket, WebSocketUpgrade},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        State,
+    },
     response::IntoResponse,
 };
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 
+use super::AppState;
+
 /// WebSocket upgrade handler
-pub async fn handler(ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(handle_socket)
+pub async fn handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
 /// Handle WebSocket connection
-async fn handle_socket(mut socket: WebSocket) {
+async fn handle_socket(mut socket: WebSocket, state: AppState) {
     tracing::info!("New WebSocket connection");
 
     // Send welcome message
@@ -37,13 +42,13 @@ async fn handle_socket(mut socket: WebSocket) {
     while let Some(msg) = socket.next().await {
         match msg {
             Ok(Message::Text(text)) => {
-                if let Err(e) = handle_message(&mut socket, &text).await {
+                if let Err(e) = handle_message(&mut socket, &text, &state).await {
                     tracing::error!("Error handling message: {}", e);
                 }
             }
             Ok(Message::Binary(data)) => {
                 if let Ok(text) = String::from_utf8(data.to_vec()) {
-                    if let Err(e) = handle_message(&mut socket, &text).await {
+                    if let Err(e) = handle_message(&mut socket, &text, &state).await {
                         tracing::error!("Error handling binary message: {}", e);
                     }
                 }
@@ -101,14 +106,18 @@ pub struct RpcError {
 }
 
 /// Handle incoming RPC message
-async fn handle_message(socket: &mut WebSocket, text: &str) -> anyhow::Result<()> {
+async fn handle_message(
+    socket: &mut WebSocket,
+    text: &str,
+    state: &AppState,
+) -> anyhow::Result<()> {
     let message: RpcMessage = serde_json::from_str(text)?;
 
     match message {
         RpcMessage::Request { id, method, params } => {
             tracing::debug!("RPC request: {} (id: {})", method, id);
 
-            let result = handle_rpc_method(&method, params).await;
+            let result = handle_rpc_method(&method, params, state).await;
 
             let response = match result {
                 Ok(value) => RpcMessage::Response {
@@ -142,6 +151,7 @@ async fn handle_message(socket: &mut WebSocket, text: &str) -> anyhow::Result<()
 async fn handle_rpc_method(
     method: &str,
     _params: serde_json::Value,
+    state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
     match method {
         "health" => Ok(serde_json::json!({
@@ -149,17 +159,43 @@ async fn handle_rpc_method(
             "version": env!("CARGO_PKG_VERSION")
         })),
 
-        "models" => Ok(serde_json::json!({
-            "models": [
-                {"id": "anthropic/claude-3-opus", "provider": "anthropic"},
-                {"id": "openai/gpt-4", "provider": "openai"},
-                {"id": "ollama/llama3", "provider": "ollama"}
-            ]
-        })),
+        "models" => {
+            let models: Vec<serde_json::Value> = state
+                .providers
+                .all_models_prefixed()
+                .into_iter()
+                .map(|pm| {
+                    serde_json::json!({
+                        "id": pm.id,
+                        "provider": pm.provider,
+                        "name": pm.model.name,
+                        "context_length": pm.model.context_length
+                    })
+                })
+                .collect();
+            Ok(serde_json::json!({ "models": models }))
+        }
 
-        "channels.status" => Ok(serde_json::json!({
-            "channels": []
-        })),
+        "providers" => {
+            let providers = state.providers.provider_ids();
+            Ok(serde_json::json!({ "providers": providers }))
+        }
+
+        "channels.status" => {
+            let statuses = state.channels.all_status().await;
+            let channels: Vec<serde_json::Value> = statuses
+                .into_iter()
+                .map(|s| {
+                    serde_json::json!({
+                        "id": s.id,
+                        "name": s.name,
+                        "connected": s.connected,
+                        "error": s.error
+                    })
+                })
+                .collect();
+            Ok(serde_json::json!({ "channels": channels }))
+        }
 
         "sessions.list" => Ok(serde_json::json!({
             "sessions": []

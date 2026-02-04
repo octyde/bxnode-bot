@@ -13,6 +13,7 @@
 mod tests;
 
 use async_trait::async_trait;
+use futures_util::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 
 /// Chat message for provider requests
@@ -104,7 +105,7 @@ pub trait Provider: Send + Sync {
     async fn complete_stream(
         &self,
         request: CompletionRequest,
-    ) -> anyhow::Result<Box<dyn futures_util::Stream<Item = anyhow::Result<String>> + Send + Unpin>>;
+    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<String>>>;
 }
 
 /// Model information
@@ -116,7 +117,10 @@ pub struct ModelInfo {
     pub capabilities: Vec<String>,
 }
 
-// Provider implementations (to be added)
+// Provider implementations
 pub mod anthropic;
 pub mod ollama;
 pub mod openai;
+pub mod registry;
+
+pub use registry::ProviderRegistry;

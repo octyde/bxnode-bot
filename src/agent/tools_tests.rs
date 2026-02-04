@@ -41,19 +41,11 @@ impl Tool for MockTool {
         })
     }
 
-    async fn execute(&self, input: serde_json::Value) -> anyhow::Result<ToolResult> {
+    async fn execute(&self, input: serde_json::Value) -> anyhow::Result<String> {
         if self.should_succeed {
-            Ok(ToolResult {
-                success: true,
-                content: format!("Executed {} with input: {:?}", self.name, input),
-                error: None,
-            })
+            Ok(format!("Executed {} with input: {:?}", self.name, input))
         } else {
-            Ok(ToolResult {
-                success: false,
-                content: String::new(),
-                error: Some("Mock execution failed".to_string()),
-            })
+            anyhow::bail!("Mock execution failed")
         }
     }
 }
@@ -99,42 +91,33 @@ fn test_tool_definition_serialization() {
 
 #[test]
 fn test_tool_result_success() {
-    let result = ToolResult {
-        success: true,
-        content: "Operation completed".to_string(),
-        error: None,
-    };
+    let result = ToolResult::success("call-123", "Operation completed");
 
     assert!(result.success);
+    assert_eq!(result.tool_call_id, "call-123");
     assert_eq!(result.content, "Operation completed");
     assert!(result.error.is_none());
 }
 
 #[test]
 fn test_tool_result_failure() {
-    let result = ToolResult {
-        success: false,
-        content: String::new(),
-        error: Some("Permission denied".to_string()),
-    };
+    let result = ToolResult::error("call-456", "Permission denied");
 
     assert!(!result.success);
+    assert_eq!(result.tool_call_id, "call-456");
     assert!(result.content.is_empty());
     assert_eq!(result.error, Some("Permission denied".to_string()));
 }
 
 #[test]
 fn test_tool_result_serialization() {
-    let result = ToolResult {
-        success: true,
-        content: "Result data".to_string(),
-        error: None,
-    };
+    let result = ToolResult::success("call-789", "Result data");
 
     let json = serde_json::to_value(&result).unwrap();
 
     assert_eq!(json["success"], true);
     assert_eq!(json["content"], "Result data");
+    assert_eq!(json["tool_call_id"], "call-789");
 }
 
 #[test]
@@ -203,31 +186,49 @@ async fn test_mock_tool_execute_success() {
 
     let result = tool.execute(json!({"input": "test"})).await.unwrap();
 
-    assert!(result.success);
-    assert!(result.content.contains("success_tool"));
-    assert!(result.error.is_none());
+    assert!(result.contains("success_tool"));
 }
 
 #[tokio::test]
 async fn test_mock_tool_execute_failure() {
     let tool = MockTool::new("fail_tool", "Always fails", false);
 
-    let result = tool.execute(json!({"input": "test"})).await.unwrap();
+    let result = tool.execute(json!({"input": "test"})).await;
 
-    assert!(!result.success);
-    assert!(result.content.is_empty());
-    assert!(result.error.is_some());
+    assert!(result.is_err());
 }
 
 #[tokio::test]
-async fn test_tool_registry_execute_through_get() {
+async fn test_tool_registry_execute() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(MockTool::new("exec_tool", "Executable tool", true)));
 
-    let tool = registry.get("exec_tool").unwrap();
-    let result = tool.execute(json!({"input": "hello"})).await.unwrap();
+    let call = ToolCall {
+        id: "call-1".to_string(),
+        name: "exec_tool".to_string(),
+        input: json!({"input": "hello"}),
+    };
+
+    let result = registry.execute(&call).await;
 
     assert!(result.success);
+    assert_eq!(result.tool_call_id, "call-1");
+}
+
+#[tokio::test]
+async fn test_tool_registry_execute_unknown() {
+    let registry = ToolRegistry::new();
+
+    let call = ToolCall {
+        id: "call-2".to_string(),
+        name: "unknown".to_string(),
+        input: json!({}),
+    };
+
+    let result = registry.execute(&call).await;
+
+    assert!(!result.success);
+    assert!(result.error.unwrap().contains("not found"));
 }
 
 #[test]
@@ -264,6 +265,7 @@ fn test_tool_definition_deserialization() {
 #[test]
 fn test_tool_result_deserialization() {
     let json = json!({
+        "tool_call_id": "call-test",
         "success": true,
         "content": "42",
         "error": null
@@ -308,4 +310,78 @@ fn test_tool_definition_with_complex_schema() {
 
     assert_eq!(restored.name, "api_call");
     assert!(restored.input_schema["properties"]["method"]["enum"].is_array());
+}
+
+#[test]
+fn test_tool_call_serialization() {
+    let call = ToolCall {
+        id: "call-abc".to_string(),
+        name: "echo".to_string(),
+        input: json!({"message": "hello"}),
+    };
+
+    let json = serde_json::to_value(&call).unwrap();
+
+    assert_eq!(json["id"], "call-abc");
+    assert_eq!(json["name"], "echo");
+    assert_eq!(json["input"]["message"], "hello");
+}
+
+#[test]
+fn test_tool_registry_contains() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(MockTool::new("exists", "Exists", true)));
+
+    assert!(registry.contains("exists"));
+    assert!(!registry.contains("not_exists"));
+}
+
+#[test]
+fn test_tool_registry_names() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(MockTool::new("tool_a", "A", true)));
+    registry.register(Box::new(MockTool::new("tool_b", "B", true)));
+
+    let names = registry.names();
+    assert_eq!(names.len(), 2);
+    assert!(names.contains(&"tool_a".to_string()));
+    assert!(names.contains(&"tool_b".to_string()));
+}
+
+#[test]
+fn test_tool_registry_unregister() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(MockTool::new("removable", "To be removed", true)));
+
+    assert!(registry.contains("removable"));
+
+    let removed = registry.unregister("removable");
+    assert!(removed.is_some());
+    assert!(!registry.contains("removable"));
+}
+
+#[tokio::test]
+async fn test_tool_registry_execute_all() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(MockTool::new("tool1", "Tool 1", true)));
+    registry.register(Box::new(MockTool::new("tool2", "Tool 2", true)));
+
+    let calls = vec![
+        ToolCall {
+            id: "c1".to_string(),
+            name: "tool1".to_string(),
+            input: json!({"input": "test1"}),
+        },
+        ToolCall {
+            id: "c2".to_string(),
+            name: "tool2".to_string(),
+            input: json!({"input": "test2"}),
+        },
+    ];
+
+    let results = registry.execute_all(&calls).await;
+
+    assert_eq!(results.len(), 2);
+    assert!(results[0].success);
+    assert!(results[1].success);
 }

@@ -68,14 +68,15 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Channel integrations (feature-gated)
 teloxide = { version = "0.14", optional = true, default-features = false, features = ["macros", "ctrlc_handler"] }
-serenity = { version = "0.12", optional = true, default-features = false, features = ["client", "gateway", "model"] }
+serenity = { version = "0.12", optional = true, default-features = false, features = ["client", "gateway", "model", "native_tls_backend"] }
 
 [features]
 default = ["channels-core"]
 channels-core = []
 channel-telegram = ["teloxide"]
 channel-discord = ["serenity"]
-full = ["channel-telegram", "channel-discord"]
+channel-slack = []
+full = ["channel-telegram", "channel-discord", "channel-slack"]
 
 [dev-dependencies]
 tokio-test = "0.4"
