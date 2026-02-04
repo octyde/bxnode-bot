@@ -1,0 +1,31 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Sessions data (runtime)
+sessions/
+
+# Config files with secrets
+config.yaml
+config.json5
+!config.example.yaml

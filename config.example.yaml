@@ -1,0 +1,45 @@
+# BXNode Bot Configuration Example
+# Copy this file to config.yaml and fill in your values
+
+server:
+  host: "0.0.0.0"
+  port: 3000
+  cors: true
+
+agents:
+  defaults:
+    model: "anthropic/claude-3-opus"
+    # image_model: "openai/gpt-4-vision"
+
+# Channel configurations (uncomment to enable)
+channels:
+  # telegram:
+  #   token: "YOUR_BOT_TOKEN"
+  #   allowed_users: []  # Empty = allow all
+
+  # discord:
+  #   token: "YOUR_BOT_TOKEN"
+  #   allowed_guilds: []
+
+  # slack:
+  #   bot_token: "xoxb-YOUR-BOT-TOKEN"
+  #   app_token: "xapp-YOUR-APP-TOKEN"
+
+# Provider configurations
+providers:
+  anthropic:
+    api_key: "${ANTHROPIC_API_KEY}"
+    # base_url: "https://api.anthropic.com"  # Optional
+
+  openai:
+    api_key: "${OPENAI_API_KEY}"
+    # base_url: "https://api.openai.com"  # Optional
+    # organization: "org-xxx"  # Optional
+
+  ollama:
+    base_url: "http://localhost:11434"
+
+# Plugin configurations
+plugins:
+  enabled: []
+  settings: {}
