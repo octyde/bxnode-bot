@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use bxnode_bot::channels::ChannelRegistry;
+use bxnode_bot::cron::CronScheduler;
 use bxnode_bot::gateway::AppState;
 use bxnode_bot::providers::ProviderRegistry;
 
@@ -20,9 +21,11 @@ fn create_test_app() -> axum::Router {
 
     let providers = ProviderRegistry::new();
     let channels = ChannelRegistry::new();
+    let cron = CronScheduler::new();
     let state = AppState {
         providers: Arc::new(providers),
         channels: Arc::new(channels),
+        cron: Arc::new(cron),
     };
 
     axum::Router::new()
@@ -41,10 +44,12 @@ fn create_test_app_with_ollama() -> axum::Router {
     let mut providers = ProviderRegistry::new();
     providers.register(Arc::new(OllamaProvider::new(OllamaConfig::default())));
     let channels = ChannelRegistry::new();
+    let cron = CronScheduler::new();
 
     let state = AppState {
         providers: Arc::new(providers),
         channels: Arc::new(channels),
+        cron: Arc::new(cron),
     };
 
     axum::Router::new()

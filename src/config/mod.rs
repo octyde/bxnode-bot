@@ -25,6 +25,10 @@ pub struct Config {
     /// Plugin configurations
     #[serde(default)]
     pub plugins: PluginsConfig,
+
+    /// Cron scheduler configuration
+    #[serde(default)]
+    pub cron: CronConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,6 +164,53 @@ pub struct PluginsConfig {
     pub settings: std::collections::HashMap<String, serde_json::Value>,
 }
 
+/// Cron scheduler configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CronConfig {
+    /// Enable the cron scheduler
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Path to the cron job store file
+    #[serde(default = "default_cron_store")]
+    pub store_path: String,
+
+    /// Jobs to register on startup
+    #[serde(default)]
+    pub jobs: Vec<CronJobConfig>,
+}
+
+impl Default for CronConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            store_path: default_cron_store(),
+            jobs: Vec::new(),
+        }
+    }
+}
+
+/// A cron job defined in configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CronJobConfig {
+    /// Unique job ID
+    pub id: String,
+
+    /// Cron schedule expression (6-field: sec min hour day month weekday)
+    pub schedule: String,
+
+    /// Job payload (passed to handler)
+    #[serde(default)]
+    pub payload: serde_json::Value,
+
+    /// Human-readable description
+    pub description: Option<String>,
+
+    /// Whether the job is enabled
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
 // Default value functions
 fn default_host() -> String {
     "0.0.0.0".to_string()
@@ -175,6 +226,10 @@ fn default_true() -> bool {
 
 fn default_ollama_url() -> String {
     "http://localhost:11434".to_string()
+}
+
+fn default_cron_store() -> String {
+    "~/.bxnode-bot/cron.json".to_string()
 }
 
 #[cfg(test)]

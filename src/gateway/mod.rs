@@ -18,8 +18,10 @@ use axum::{
 };
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
-use crate::channels::{ChannelEvent, ChannelRegistry};
+use crate::agent::{AgentConfig, AgentContext, AgentExecutor, ToolRegistry};
+use crate::channels::{ChannelEvent, ChannelRegistry, IncomingMessage, MessageContent, OutgoingMessage};
 use crate::cli::ServeArgs;
+use crate::cron::{CronEvent, CronJob, CronScheduler, CronStore};
 use crate::providers::ProviderRegistry;
 
 /// Embedded UI assets
@@ -35,6 +37,7 @@ pub use http::*;
 pub struct AppState {
     pub providers: Arc<ProviderRegistry>,
     pub channels: Arc<ChannelRegistry>,
+    pub cron: Arc<CronScheduler>,
 }
 
 /// Start the gateway server
@@ -67,11 +70,28 @@ pub async fn serve(args: ServeArgs) -> Result<()> {
 
     let channel_registry = Arc::new(channel_registry);
 
+    // Wrap provider registry in Arc for sharing
+    let provider_registry = Arc::new(provider_registry);
+
     // Start channel event handler in background
     let event_channel_registry = channel_registry.clone();
+    let event_provider_registry = provider_registry.clone();
+    let default_model = config
+        .agents
+        .defaults
+        .model
+        .clone()
+        .unwrap_or_else(|| "anthropic/claude-3-opus".to_string());
+
     if let Some(mut event_rx) = channel_registry.take_event_receiver().await {
         tokio::spawn(async move {
-            handle_channel_events(&mut event_rx, &event_channel_registry).await;
+            handle_channel_events(
+                &mut event_rx,
+                &event_channel_registry,
+                &event_provider_registry,
+                &default_model,
+            )
+            .await;
         });
     }
 
@@ -80,9 +100,44 @@ pub async fn serve(args: ServeArgs) -> Result<()> {
         tracing::error!("Failed to start channels: {}", e);
     }
 
+    // Initialize cron scheduler
+    let cron_scheduler = CronScheduler::new();
+    if config.cron.enabled {
+        // Load jobs from store and config
+        if let Err(e) = load_cron_jobs(&cron_scheduler, &config).await {
+            tracing::error!("Failed to load cron jobs: {}", e);
+        }
+
+        let job_count = cron_scheduler.list_jobs().await.len();
+        tracing::info!("Loaded {} cron job(s)", job_count);
+    } else {
+        tracing::info!("Cron scheduler disabled");
+    }
+
+    let cron_scheduler = Arc::new(cron_scheduler);
+
+    // Start cron event handler in background
+    if config.cron.enabled {
+        let event_cron = cron_scheduler.clone();
+        if let Some(mut cron_rx) = cron_scheduler.take_event_receiver().await {
+            tokio::spawn(async move {
+                handle_cron_events(&mut cron_rx, &event_cron).await;
+            });
+        }
+
+        // Start the cron scheduler tick loop
+        let tick_cron = cron_scheduler.clone();
+        tokio::spawn(async move {
+            if let Err(e) = tick_cron.start().await {
+                tracing::error!("Cron scheduler error: {}", e);
+            }
+        });
+    }
+
     let state = AppState {
-        providers: Arc::new(provider_registry),
+        providers: provider_registry.clone(),
         channels: channel_registry.clone(),
+        cron: cron_scheduler.clone(),
     };
 
     // Build the router
@@ -112,6 +167,9 @@ pub async fn serve(args: ServeArgs) -> Result<()> {
 
     // Stop channels on shutdown
     channel_registry.stop_all().await?;
+
+    // Stop cron scheduler
+    cron_scheduler.stop().await;
 
     Ok(())
 }
@@ -176,8 +234,17 @@ async fn register_channels_from_config(registry: &ChannelRegistry, config: &crat
 /// Handle channel events in background
 async fn handle_channel_events(
     event_rx: &mut tokio::sync::mpsc::Receiver<ChannelEvent>,
-    _registry: &Arc<ChannelRegistry>,
+    registry: &Arc<ChannelRegistry>,
+    providers: &Arc<ProviderRegistry>,
+    default_model: &str,
 ) {
+    // Simple conversation context cache (keyed by chat_id)
+    use std::collections::HashMap;
+    use tokio::sync::RwLock;
+
+    let contexts: Arc<RwLock<HashMap<String, AgentContext>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+
     while let Some(event) = event_rx.recv().await {
         match event {
             ChannelEvent::Connected { channel } => {
@@ -194,13 +261,197 @@ async fn handle_channel_events(
                 tracing::error!("Channel '{}' error: {}", channel, error);
             }
             ChannelEvent::Message(msg) => {
-                tracing::debug!(
-                    "Received message from channel '{}': {:?}",
+                tracing::info!(
+                    "Received message from channel '{}' chat '{}': {:?}",
                     msg.channel,
+                    msg.chat_id,
                     msg.content.as_text().unwrap_or("<non-text>")
                 );
-                // TODO: Route message to agent for processing
+
+                // Process message in a separate task
+                let registry = registry.clone();
+                let providers = providers.clone();
+                let contexts = contexts.clone();
+                let model = default_model.to_string();
+
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        process_channel_message(msg, &registry, &providers, &contexts, &model).await
+                    {
+                        tracing::error!("Failed to process message: {}", e);
+                    }
+                });
             }
         }
     }
+}
+
+/// Process a channel message through the agent
+async fn process_channel_message(
+    msg: IncomingMessage,
+    registry: &Arc<ChannelRegistry>,
+    providers: &Arc<ProviderRegistry>,
+    contexts: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, AgentContext>>>,
+    model: &str,
+) -> anyhow::Result<()> {
+    use std::collections::HashMap;
+
+    // Only process text messages for now
+    let text = match msg.content.as_text() {
+        Some(t) => t.to_string(),
+        None => {
+            tracing::debug!("Skipping non-text message");
+            return Ok(());
+        }
+    };
+
+    // Get or create context for this chat
+    let context_key = format!("{}:{}", msg.channel, msg.chat_id);
+    let mut context = {
+        let mut contexts_write = contexts.write().await;
+        contexts_write
+            .entry(context_key.clone())
+            .or_insert_with(AgentContext::default)
+            .clone()
+    };
+
+    // Get the provider
+    let provider = match providers.get_for_model(model) {
+        Some(p) => p,
+        None => {
+            tracing::error!("No provider found for model: {}", model);
+            // Send error message back
+            send_reply(
+                &registry,
+                &msg,
+                "Sorry, I couldn't find a provider for this model. Please check configuration.",
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    // Create agent executor
+    let tools = Arc::new(ToolRegistry::new());
+    let config = AgentConfig {
+        model: model.to_string(),
+        ..Default::default()
+    };
+    let executor = AgentExecutor::new(provider, tools, config);
+
+    // Execute the agent
+    match executor.execute(&mut context, &text).await {
+        Ok(result) => {
+            // Save updated context
+            {
+                let mut contexts_write = contexts.write().await;
+                contexts_write.insert(context_key, context);
+            }
+
+            // Send response back to channel
+            send_reply(&registry, &msg, &result.content).await?;
+
+            tracing::info!(
+                "Responded to chat '{}' with {} tokens",
+                msg.chat_id,
+                result.usage.total_tokens
+            );
+        }
+        Err(e) => {
+            tracing::error!("Agent execution failed: {}", e);
+            send_reply(
+                &registry,
+                &msg,
+                &format!("Sorry, I encountered an error: {}", e),
+            )
+            .await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Send a reply to a channel message
+async fn send_reply(
+    registry: &Arc<ChannelRegistry>,
+    original: &IncomingMessage,
+    content: &str,
+) -> anyhow::Result<()> {
+    let reply = OutgoingMessage {
+        chat_id: original.chat_id.clone(),
+        content: MessageContent::Text {
+            text: content.to_string(),
+        },
+        reply_to: Some(original.id.clone()),
+        parse_mode: None,
+    };
+
+    registry.send(&original.channel, reply).await?;
+    Ok(())
+}
+
+/// Load cron jobs from config and persistent store
+async fn load_cron_jobs(scheduler: &CronScheduler, config: &crate::Config) -> anyhow::Result<()> {
+    // Load jobs from store
+    let store_path = expand_path(&config.cron.store_path);
+    if std::path::Path::new(&store_path).exists() {
+        let store = CronStore::open(&store_path)?;
+        for entry in store.list()? {
+            if let Err(e) = scheduler.add_job(entry.job).await {
+                tracing::warn!("Failed to load cron job from store: {}", e);
+            }
+        }
+    }
+
+    // Load jobs from config (additive, won't override store jobs)
+    for job_config in &config.cron.jobs {
+        // Skip if job already loaded from store
+        if scheduler.get_job(&job_config.id).await.is_some() {
+            continue;
+        }
+
+        let job = CronJob {
+            id: job_config.id.clone(),
+            schedule: job_config.schedule.clone(),
+            payload: job_config.payload.clone(),
+            enabled: job_config.enabled,
+            description: job_config.description.clone(),
+            last_run: None,
+            last_result: None,
+        };
+
+        if let Err(e) = scheduler.add_job(job).await {
+            tracing::warn!("Failed to load cron job '{}' from config: {}", job_config.id, e);
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle cron events in background
+async fn handle_cron_events(
+    event_rx: &mut tokio::sync::mpsc::Receiver<CronEvent>,
+    _scheduler: &Arc<CronScheduler>,
+) {
+    while let Some(event) = event_rx.recv().await {
+        tracing::info!(
+            "Cron job '{}' triggered at {}",
+            event.job_id,
+            event.scheduled_at
+        );
+        tracing::debug!("Cron payload: {:?}", event.payload);
+
+        // TODO: Execute job based on payload
+        // This is where we'd dispatch to an agent or run an action
+    }
+}
+
+/// Expand ~ to home directory
+fn expand_path(path: &str) -> String {
+    if path.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return format!("{}{}", home.display(), &path[1..]);
+        }
+    }
+    path.to_string()
 }

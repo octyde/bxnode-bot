@@ -39,6 +39,22 @@ providers:
   ollama:
     base_url: "http://localhost:11434"
 
+# Cron scheduler configuration
+cron:
+  # Enable/disable the cron scheduler
+  enabled: true
+  # Path to persistent job store
+  store_path: "~/.bxnode-bot/cron.json"
+  # Jobs defined in config (persistent jobs managed via CLI)
+  jobs: []
+    # Example job - runs daily at 9 AM UTC
+    # - id: "daily-summary"
+    #   schedule: "0 0 9 * * *"  # 6-field cron: sec min hour day month weekday
+    #   payload:
+    #     action: "generate-summary"
+    #   description: "Daily morning summary"
+    #   enabled: true
+
 # Plugin configurations
 plugins:
   enabled: []

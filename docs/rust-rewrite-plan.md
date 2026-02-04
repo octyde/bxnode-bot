@@ -1,270 +1,37 @@
-# Rust Rewrite Estimation for OpenClaw
+# BXNode Bot Implementation Plan (Revised)
 
 ## Executive Summary
 
-**Goal:** Single binary deployment replacing the TypeScript/Node.js codebase.
+**Goal:** Single binary AI agent gateway with multi-platform messaging support.
 
-### Scope Decisions
-- **Approach:** Full Rust rewrite (no hybrid)
-- **WhatsApp:** Not needed (removes highest-risk integration)
-- **Plugins:** Native Rust only (rewrite existing extensions)
+### Current Progress (Phase 1-3 Complete)
+- CLI framework with `clap`
+- HTTP/WebSocket server (`axum` + `tokio-tungstenite`)
+- Configuration system (`serde_yaml`, `json5`)
+- Provider clients: Anthropic, OpenAI, Ollama with streaming
+- Tool calling framework with JSON schemas
+- Agent context management and execution loop
+- Channel implementations: Telegram, Discord, Slack
+- Gateway integration with channel registry
 
-| Metric | Value |
-|--------|-------|
-| **Total TS/JS Files** | ~2,572 |
-| **Total Lines of Code** | ~80,250 |
-| **Extensions** | 31 plugins → rewrite in Rust |
-| **Channel Integrations** | 7 platforms (no WhatsApp) |
-| **Estimated Rust LOC** | 20,000-28,000 |
-| **Estimated Duration** | **12-18 months (1 FTE)** |
-
----
-
-## Architecture Overview
-
-### Current Stack (TypeScript/Node.js)
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  openclaw.mjs → src/entry.ts (CLI Bootstrap)                    │
-├─────────────────────────────────────────────────────────────────┤
-│  Gateway Server (src/gateway/) - 124 files                      │
-│  ├── Protocol Layer (typebox schemas, WS frames)                │
-│  ├── HTTP Server (Express: webhooks, OpenAI compat API)         │
-│  ├── WebSocket Server (ws: RPC, real-time events)               │
-│  └── Server Methods (30 RPC handlers)                           │
-├─────────────────────────────────────────────────────────────────┤
-│  Channel Integrations (src/channels/) - 8+ platforms            │
-│  ├── WhatsApp (baileys), Telegram (grammy), Discord             │
-│  ├── Slack (bolt), LINE, Signal, iMessage, Feishu               │
-│  └── Unified interface: dock.ts (15,208 LOC)                    │
-├─────────────────────────────────────────────────────────────────┤
-│  Plugin System (src/plugins/) - 6,511 LOC                       │
-│  ├── Dynamic discovery & loading (jiti)                         │
-│  ├── Registry pattern with hot-reload                           │
-│  └── 31 extensions in extensions/                               │
-├─────────────────────────────────────────────────────────────────┤
-│  AI Agent Runtime (@mariozechner/pi-*)                          │
-│  ├── pi-ai (LLM provider abstraction)                           │
-│  ├── pi-agent-core (agent execution)                            │
-│  └── pi-coding-agent (code-specific features)                   │
-├─────────────────────────────────────────────────────────────────┤
-│  Web Control UI (ui/) - Lit.js + Vite                           │
-│  └── 128 files, 21,459 LOC                                      │
-└─────────────────────────────────────────────────────────────────┘
-```
+### Nanobot Lessons Applied
+Based on analysis of HKUDS/nanobot, we're incorporating:
+1. **Clear module boundaries** - Single public interface per module
+2. **Cron as first-class primitive** - Scheduling built into core
+3. **Minimal, explicit agent loop** - context → tools → execution
+4. **Config-first UX** - Single config file controls everything
 
 ---
 
-## Component-by-Component Estimation
-
-### 1. CLI Bootstrap & Entry
-| Metric | Value |
-|--------|-------|
-| Current LOC | ~500 |
-| Complexity | Low |
-| Effort | **1-2 weeks** |
-| Rust Crates | `clap`, `tokio`, `anyhow`, `tracing`, `dotenvy` |
-
-**Tasks:**
-- Argument parsing with `clap`
-- Configuration loading (YAML/JSON5 via `serde_yaml`, `json5`)
-- Process lifecycle management
-- Environment setup
-
----
-
-### 2. Gateway Server
-| Metric | Value |
-|--------|-------|
-| Current Files | 124 |
-| Current LOC | ~12,000 |
-| Complexity | High |
-| Effort | **10-14 weeks** |
-| Rust Crates | `axum`/`actix-web`, `tokio`, `tokio-tungstenite`, `serde`, `tower` |
-
-**Subsystems:**
-
-| Subsystem | LOC | Weeks |
-|-----------|-----|-------|
-| Protocol schemas | 2,000 | 2 |
-| HTTP server (REST, webhooks) | 2,500 | 3 |
-| WebSocket server (RPC, events) | 1,500 | 2 |
-| Server methods (30 handlers) | 7,200 | 5-6 |
-| Session management | 700 | 1 |
-
-**Key Challenges:**
-- WebSocket challenge/nonce authentication flow
-- Hot configuration reloading
-- OpenAI-compatible API endpoints (`/v1/chat/completions`)
-
----
-
-### 3. Channel Integrations
-| Metric | Value |
-|--------|-------|
-| Platforms | 7 (WhatsApp excluded) |
-| Core LOC (dock.ts) | 15,208 |
-| Complexity | **High** |
-| Effort | **10-14 weeks** |
-
-**Per-Channel Breakdown:**
-
-| Channel | Current SDK | Rust Alternative | Weeks |
-|---------|-------------|------------------|-------|
-| Telegram | `grammy` | `teloxide` | 2 |
-| Discord | native API | `serenity`/`twilight` | 2 |
-| Slack | `@slack/bolt` | `slack-morphism` | 2 |
-| LINE | `@line/bot-sdk` | HTTP wrapper | 1-2 |
-| Signal | signal-utils | `libsignal-protocol` | 2-3 |
-| iMessage | BlueBubbles proxy | HTTP wrapper | 1 |
-| Feishu | `@larksuiteoapi/node-sdk` | HTTP wrapper | 1 |
-
-**Note:** WhatsApp support excluded per scope decision. This removes the highest-risk integration (no Rust equivalent for baileys protocol).
-
----
-
-### 4. Plugin System
-| Metric | Value |
-|--------|-------|
-| Current LOC | 6,511 |
-| Extensions | 31 → rewrite in Rust |
-| Complexity | **Medium** |
-| Effort | **6-8 weeks** |
-
-**Chosen Approach: Native Rust Plugins**
-
-Per scope decision, all plugins will be native Rust. This simplifies the architecture significantly:
-
-| Component | Crates | Effort |
-|-----------|--------|--------|
-| Plugin trait definition | - | 1 week |
-| Dynamic loading (`libloading`) | `libloading`, `abi_stable` | 2 weeks |
-| Plugin registry & lifecycle | - | 2 weeks |
-| Extension rewrites (31 plugins) | Various | 2-3 weeks |
-
-**Plugin Trait Design:**
-```rust
-pub trait OpenClawPlugin: Send + Sync {
-    fn id(&self) -> &str;
-    fn register(&self, api: &mut PluginApi);
-    fn shutdown(&self) {}
-}
-```
-
-**Benefits of Native Rust:**
-- No JS runtime overhead
-- Compile-time type safety
-- Smaller binary size
-- Simpler debugging
-
----
-
-### 5. AI Agent Runtime
-| Metric | Value |
-|--------|-------|
-| Dependencies | `@mariozechner/pi-ai`, `pi-agent-core`, `pi-coding-agent` |
-| Complexity | **Very High** |
-| Effort | **16-24 weeks** |
-
-**This is the highest-risk component.**
-
-These are proprietary Mario Zechner libraries deeply integrated throughout:
-- LLM provider abstraction (model selection, message conversion, tool formatting)
-- Agent execution runtime (context management, tool calling, streaming)
-- Coding-specific features (code analysis, file operations)
-
-**Tasks:**
-1. Provider trait abstraction (~3 weeks)
-2. HTTP clients for each LLM provider (~4 weeks)
-3. Agent execution loop (~6-8 weeks)
-4. Tool system (~3 weeks)
-5. Streaming response handling (~2 weeks)
-
-**Supported Providers to Implement:**
-- Anthropic (Claude)
-- OpenAI (GPT, Codex)
-- AWS Bedrock
-- Ollama (local)
-- Z.AI
-- Venice.ai
-- Qwen Portal
-
----
-
-### 6. Web Control UI Embedding
-| Metric | Value |
-|--------|-------|
-| Current LOC | 21,459 |
-| Complexity | Low |
-| Effort | **1-2 weeks** |
-| Rust Crates | `rust-embed`, `axum` static files |
-
-**Approach:**
-1. Keep Lit.js UI unchanged
-2. Build with Vite to `dist/control-ui/`
-3. Embed in binary: `rust_embed::RustEmbed`
-4. Serve via `axum::Router::nest_service`
-
-```rust
-#[derive(RustEmbed)]
-#[folder = "ui/dist/"]
-struct UiAssets;
-```
-
-Binary size increase: ~2-5 MB (acceptable).
-
----
-
-### 7. Native Dependencies Migration
-
-| Dependency | Purpose | Rust Alternative | Effort |
-|------------|---------|------------------|--------|
-| `@lydell/node-pty` | Terminal PTY | `portable-pty` | 1 week |
-| `sharp` | Image processing | `image` crate | 1 week |
-| `pdfjs-dist` | PDF parsing | `pdfium-render` | 2 weeks |
-| `playwright-core` | Browser automation | `chromiumoxide` | 3 weeks |
-| `@matrix-org/matrix-sdk-crypto` | Matrix E2EE | `matrix-sdk-crypto` | 2 weeks |
-| `chokidar` | File watching | `notify` | 1 week |
-| `croner` | Cron scheduling | `cron` | 1 week |
-
----
-
-## Total Effort Estimation (Revised)
-
-With WhatsApp excluded and native Rust plugins:
-
-| Component | Min Weeks | Max Weeks |
-|-----------|-----------|-----------|
-| CLI Bootstrap | 1 | 2 |
-| Gateway Server | 10 | 14 |
-| Channel Integrations | 10 | 14 |
-| Plugin System | 6 | 8 |
-| AI Agent Runtime | 16 | 24 |
-| UI Embedding | 1 | 2 |
-| Native Dependencies | 8 | 10 |
-| Testing & Integration | 6 | 10 |
-| Documentation | 2 | 3 |
-| **Total** | **60 weeks** | **87 weeks** |
-
-**Duration: 12-18 months** (1 FTE) or **6-9 months** (2 FTE)
-
-### Savings from Scope Decisions
-- WhatsApp removed: -6-8 weeks (highest-risk item eliminated)
-- Native Rust plugins: -4-6 weeks (no JS runtime embedding)
-- **Total savings: 10-14 weeks**
-
----
-
-## Single Binary Architecture
+## Revised Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                    openclaw (single binary)                   │
-│                        ~15-25 MB                              │
+│                    bxnode-bot (single binary)                 │
+│                        ~12 MB (current)                       │
 ├──────────────────────────────────────────────────────────────┤
 │  CLI Layer (clap)                                            │
-│    └─ Commands: serve, chat, config, plugin, ...             │
+│    └─ Commands: serve, config, cron, version                 │
 ├──────────────────────────────────────────────────────────────┤
 │  Gateway Server (axum + tokio)                               │
 │    ├─ HTTP endpoints (/v1/chat/completions, webhooks)        │
@@ -274,219 +41,277 @@ With WhatsApp excluded and native Rust plugins:
 │  Core Services                                               │
 │    ├─ Session Manager (JSONL transcripts)                    │
 │    ├─ Channel Router                                         │
-│    ├─ Cron Scheduler                                         │
-│    └─ Config Hot-Reload (notify)                             │
+│    ├─ Cron Scheduler (NEW - first-class)                     │
+│    └─ Config Manager                                         │
 ├──────────────────────────────────────────────────────────────┤
 │  LLM Provider Clients (reqwest + serde)                      │
-│    └─ Anthropic, OpenAI, Bedrock, Ollama, ...                │
+│    └─ Anthropic, OpenAI, Ollama (✓ complete)                 │
 ├──────────────────────────────────────────────────────────────┤
 │  Agent Runtime                                               │
-│    ├─ Execution loop                                         │
-│    ├─ Tool registry                                          │
-│    └─ Context management                                     │
-├──────────────────────────────────────────────────────────────┤
-│  Plugin Runtime (wasmtime)                                   │
-│    └─ WASM plugin loader & sandbox                           │
+│    ├─ Execution loop (✓ basic)                               │
+│    ├─ Tool registry (✓ complete)                             │
+│    └─ Context management (✓ complete)                        │
 ├──────────────────────────────────────────────────────────────┤
 │  Channel Clients                                             │
-│    └─ teloxide, serenity, slack-morphism, ...                │
+│    └─ teloxide, serenity, slack (✓ complete)                 │
 ├──────────────────────────────────────────────────────────────┤
 │  Embedded Assets (rust-embed)                                │
-│    └─ ui/dist/* (~2-5 MB)                                    │
+│    └─ ui/dist/* (pending)                                    │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Risk Matrix (Revised)
+## Module Map (Clear Boundaries)
 
-| Risk | Probability | Impact | Mitigation |
-|------|-------------|--------|------------|
-| Agent runtime complexity | High | Critical | Phased migration, extensive testing |
-| Timeline overrun | Medium | Medium | MVP-first approach, cut scope |
-| Rust ecosystem gaps | Low | Medium | Fallback to HTTP wrappers |
-| Performance regression | Low | Low | Benchmark against Node baseline |
+Each module has a single public entrypoint via `mod.rs`:
 
-**Eliminated Risks:**
-- ~~WhatsApp integration gap~~ (excluded from scope)
-- ~~Plugin ecosystem breakage~~ (native Rust, clean break)
+| Module | Owner | Public Entrypoint |
+|--------|-------|-------------------|
+| `agent` | Agent loop, context, tool execution | `bxnode_bot::agent` |
+| `channels` | Channel adapters and registry | `bxnode_bot::channels` |
+| `cli` | CLI surface and subcommands | `bxnode_bot::cli` |
+| `config` | Config schema and loading | `bxnode_bot::config` |
+| `cron` | **NEW** Cron scheduler and store | `bxnode_bot::cron` |
+| `gateway` | HTTP and WS server | `bxnode_bot::gateway` |
+| `plugins` | Plugin discovery and lifecycle | `bxnode_bot::plugins` |
+| `providers` | LLM client registry | `bxnode_bot::providers` |
+| `session` | Session storage and persistence | `bxnode_bot::session` |
 
 ---
 
-## Recommended Phased Approach (Revised)
+## Revised Phase Plan
 
-### Phase 1: Foundation (Weeks 1-14)
-**Goal:** Single binary serving UI with basic gateway.
+### Phase 1: Foundation ✓ COMPLETE
+- [x] CLI framework with `clap`
+- [x] HTTP/WebSocket server skeleton
+- [x] Configuration system
+- [x] Basic session management
 
-- [ ] CLI framework with `clap`
-- [ ] HTTP/WebSocket server skeleton (`axum` + `tokio-tungstenite`)
-- [ ] Configuration system (`serde_yaml`, `json5`)
-- [ ] Embed and serve control UI (`rust-embed`)
-- [ ] Basic session management (JSONL transcripts)
+### Phase 2: LLM Integration ✓ COMPLETE
+- [x] Provider abstraction trait
+- [x] Implement: Anthropic, OpenAI, Ollama
+- [x] Streaming response support (SSE)
+- [x] Tool calling framework
 
-**Deliverable:** Binary that serves the web UI and handles config.
+### Phase 3: Channel Migration ✓ COMPLETE (Core)
+- [x] Channel abstraction trait
+- [x] Implement: Telegram, Discord, Slack
+- [x] Unified message routing
+- [x] Gateway integration
 
-### Phase 2: LLM Integration (Weeks 15-26)
-**Goal:** Functional chat capabilities.
+### Phase 4: Nanobot Adoption (NEW - Current)
+**Goal:** Tighten architecture based on nanobot lessons.
 
-- [ ] Provider abstraction trait
-- [ ] Implement: Anthropic, OpenAI, Ollama (priority providers)
-- [ ] Streaming response support (SSE)
-- [ ] Tool calling framework
+#### 4.1 Module Boundaries (0.5 days)
+- [ ] Create `docs/module-map.md` with ownership and entrypoints
+- [ ] Audit cross-module imports
+- [ ] Add `tests/module_boundaries.rs` guardrail
 
-**Deliverable:** Working `/v1/chat/completions` API.
+#### 4.2 Cron as First-Class Primitive (3 days)
+- [ ] Create `src/cron/mod.rs`, `scheduler.rs`, `store.rs`
+- [ ] Add `CronConfig` to config schema
+- [ ] Add CLI commands: `cron list`, `cron add`, `cron remove`, `cron run`
+- [ ] Wire cron into gateway startup
+- [ ] Add tests for cron scheduling
 
-### Phase 3: Channel Migration (Weeks 27-40)
-**Goal:** Messaging platform support.
+#### 4.3 Config-First UX (1 day)
+- [ ] Ensure single config file controls all subsystems
+- [ ] Add `config show` CLI command for effective config
+- [ ] Create `docs/configuration.md`
+- [ ] Create `config.example.yaml` with all options
 
-- [ ] Channel abstraction trait
-- [ ] Implement: Telegram (`teloxide`), Discord (`serenity`), Slack
-- [ ] Unified message routing
-- [ ] LINE, Signal, iMessage, Feishu
+#### 4.4 Agent Loop Clarity (1 day)
+- [ ] Document agent loop flow in `src/agent/mod.rs`
+- [ ] Add lifecycle tests for context → tools → execution
+- [ ] Update `docs/module-map.md` with agent internals
 
-**Deliverable:** Multi-platform messaging (7 channels).
+### Phase 5: Message-to-Agent Routing (2 days)
+**Goal:** Complete the channel → agent → response flow.
 
-### Phase 4: Agent Runtime (Weeks 41-60)
-**Goal:** Full agent capabilities.
+- [ ] Route channel messages to agent for processing
+- [ ] Send agent responses back to channel
+- [ ] Handle streaming responses in channels
+- [ ] Add conversation context per chat_id
 
-- [ ] Agent execution loop
-- [ ] Tool registry and execution
-- [ ] Context management
-- [ ] Coding-specific features
+### Phase 6: Remaining Channels (Optional, 5-7 days)
+**Goal:** HTTP wrapper channels for completeness.
 
-**Deliverable:** Feature parity with pi-agent-core.
+- [ ] LINE (HTTP wrapper)
+- [ ] Signal (HTTP wrapper)
+- [ ] iMessage (BlueBubbles proxy)
+- [ ] Feishu (HTTP wrapper)
 
-### Phase 5: Plugin System (Weeks 61-68)
+### Phase 7: Plugin System (6-8 weeks)
 **Goal:** Native Rust extensibility.
 
-- [ ] Plugin trait and dynamic loading (`libloading`)
+- [ ] Plugin trait and dynamic loading
 - [ ] Plugin registry and lifecycle
-- [ ] Rewrite critical extensions in Rust
+- [ ] Example plugins
 
-**Deliverable:** Native Rust plugin architecture.
-
-### Phase 6: Polish (Weeks 69-80)
+### Phase 8: Polish (2-3 weeks)
 **Goal:** Production ready.
 
 - [ ] Comprehensive testing
-- [ ] Performance optimization
+- [ ] Performance benchmarking
 - [ ] Documentation
-- [ ] Migration guide from TypeScript version
-
-**Deliverable:** Production-ready single binary.
+- [ ] Web UI embedding
 
 ---
 
-## Key Files to Reference (in OpenClaw repo)
+## Immediate Next Tasks (Prioritized)
 
-| Component | Critical Files |
-|-----------|----------------|
-| Entry | `src/entry.ts` |
-| Gateway HTTP | `src/gateway/server-http.ts` |
-| Gateway WebSocket | `src/gateway/server/ws-connection.ts` |
-| Protocol Schemas | `src/gateway/protocol/` |
-| Channel Core | `src/channels/dock.ts` (15,208 LOC) |
-| Plugin Loader | `src/plugins/loader.ts` |
-| Plugin Registry | `src/plugins/registry.ts` |
-| Agent Runtime | `@mariozechner/pi-agent-core` (external) |
-| Web UI | `ui/` (Lit.js + Vite) |
+Based on nanobot adoption plan:
+
+### Task 1: Module Map (0.5 day)
+Create `docs/module-map.md`:
+```markdown
+# Module Map
+
+## agent
+Owner: Agent loop and tool execution
+Public entrypoint: `bxnode_bot::agent`
+
+## channels
+Owner: Channel adapters and registry
+Public entrypoint: `bxnode_bot::channels`
+
+...
+```
+
+### Task 2: Cron Module (1.5 days)
+Create `src/cron/`:
+```rust
+// src/cron/mod.rs
+pub mod scheduler;
+pub mod store;
+
+pub use scheduler::{CronScheduler, CronJob};
+pub use store::{CronStore, CronStoreEntry};
+```
+
+### Task 3: Cron Config (0.5 day)
+Update `src/config/mod.rs`:
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CronConfig {
+    #[serde(default)]
+    pub enabled: bool,
+
+    #[serde(default = "default_cron_store")]
+    pub store_path: String,
+}
+```
+
+### Task 4: Cron CLI (1 day)
+Add to `src/cli/mod.rs`:
+```rust
+#[derive(Subcommand, Debug)]
+pub enum CronAction {
+    List,
+    Add { id: String, schedule: String, payload: String },
+    Remove { id: String },
+    Run { id: String },
+}
+```
+
+### Task 5: Message Routing (2 days)
+Update `src/gateway/mod.rs` event handler:
+```rust
+ChannelEvent::Message(msg) => {
+    // Route to agent, get response, send back to channel
+    let response = agent.process(msg).await;
+    channels.send(&msg.channel, response).await;
+}
+```
 
 ---
 
-## Recommended Rust Project Structure
+## Definition of Done (Phase 4)
+
+1. Module map doc exists at `docs/module-map.md`
+2. No deep cross-module imports outside public interfaces
+3. Cron is configurable, manageable by CLI, and tested
+4. Config is the single source of truth
+5. Agent loop is documented with lifecycle tests
+6. Channel messages route to agent and responses return
+
+---
+
+## Current Codebase Stats
+
+| Metric | Value |
+|--------|-------|
+| Rust LOC | ~5,500 |
+| Test count | 222 |
+| Binary size (release) | 12 MB |
+| Providers | 3 (Anthropic, OpenAI, Ollama) |
+| Channels | 3 (Telegram, Discord, Slack) |
+| Features | streaming, tool calling, SSE |
+
+---
+
+## Risk Assessment
+
+| Risk | Probability | Impact | Mitigation |
+|------|-------------|--------|------------|
+| Cron storage migration | Low | Low | Use simple JSON store with versioned schema |
+| Module boundary refactors | Medium | Low | Add boundary tests first |
+| Agent-channel routing complexity | Medium | Medium | Start with simple sync flow |
+
+---
+
+## File Structure (Target)
 
 ```
-openclaw-rs/
+bxnode-bot/
 ├── Cargo.toml
+├── config.example.yaml          # NEW: Complete config example
+├── docs/
+│   ├── module-map.md           # NEW: Module boundaries
+│   ├── configuration.md        # NEW: Config reference
+│   └── nanobot-lessons.md      # Existing
 ├── src/
-│   ├── main.rs                 # CLI entry (clap)
+│   ├── main.rs
 │   ├── lib.rs
-│   ├── cli/                    # CLI commands
-│   ├── gateway/
+│   ├── agent/                  # ✓ Complete
+│   ├── channels/               # ✓ Complete (core)
+│   ├── cli/
 │   │   ├── mod.rs
-│   │   ├── http.rs             # axum HTTP server
-│   │   ├── ws.rs               # WebSocket RPC
-│   │   ├── protocol.rs         # Frame types
-│   │   └── methods/            # RPC handlers
-│   ├── channels/
-│   │   ├── mod.rs              # Channel trait
-│   │   ├── telegram.rs         # teloxide
-│   │   ├── discord.rs          # serenity
-│   │   ├── slack.rs
-│   │   └── ...
-│   ├── agent/
-│   │   ├── mod.rs              # Agent runtime
-│   │   ├── execution.rs        # Execution loop
-│   │   ├── tools.rs            # Tool registry
-│   │   └── context.rs
-│   ├── providers/
-│   │   ├── mod.rs              # Provider trait
-│   │   ├── anthropic.rs
-│   │   ├── openai.rs
-│   │   └── ollama.rs
-│   ├── plugins/
-│   │   ├── mod.rs              # Plugin trait
-│   │   ├── loader.rs           # Dynamic loading
-│   │   └── registry.rs
-│   ├── config/
-│   │   └── mod.rs              # serde_yaml config
-│   └── session/
-│       └── mod.rs              # JSONL transcripts
-├── ui/                         # Lit.js UI (unchanged)
-│   └── dist/                   # Embedded at compile
-└── plugins/                    # Native Rust plugins
-    ├── telegram/
-    ├── discord/
-    └── ...
+│   │   ├── config.rs
+│   │   └── cron.rs             # NEW
+│   ├── config/                 # ✓ Complete
+│   ├── cron/                   # NEW
+│   │   ├── mod.rs
+│   │   ├── scheduler.rs
+│   │   ├── store.rs
+│   │   └── tests.rs
+│   ├── gateway/                # ✓ Complete
+│   ├── plugins/                # Stub
+│   ├── providers/              # ✓ Complete
+│   └── session/                # ✓ Complete
+├── tests/
+│   ├── http_integration.rs
+│   ├── websocket_integration.rs
+│   ├── module_boundaries.rs    # NEW
+│   └── cron_e2e.rs             # NEW
+└── plan/
+    ├── 001-nanobot-best-parts.md
+    ├── 002-nanobot-adoption-plan.md
+    └── 003-nanobot-adoption-tasks.md
 ```
-
----
-
-## Verification & Testing Strategy
-
-### Unit Testing
-- Use `#[tokio::test]` for async tests
-- Mock LLM providers with `wiremock`
-- Test protocol serialization with `serde_json`
-
-### Integration Testing
-- Spin up gateway, verify WebSocket RPC
-- Test each channel with mock servers
-- End-to-end session transcript validation
-
-### Benchmarking
-- Compare startup time vs Node.js version
-- Memory usage under load (100 concurrent sessions)
-- Message throughput per channel
-
-### CI/CD
-- Cross-compile for Linux (x86_64, aarch64), macOS, Windows
-- Binary size tracking
-- Automated release builds with `cargo-dist`
 
 ---
 
 ## Conclusion
 
-A full Rust rewrite for single binary deployment is **feasible**:
+The revised plan integrates nanobot lessons to create a cleaner, more maintainable architecture:
 
-| Metric | Value |
-|--------|-------|
-| **Timeline** | 12-18 months (1 FTE) |
-| **Rust LOC** | 20,000-28,000 |
-| **Binary Size** | ~15-25 MB |
-| **Primary Risk** | Agent runtime complexity |
+1. **Module boundaries** make the codebase easier to understand and modify
+2. **Cron as first-class** enables scheduling use cases without hacks
+3. **Config-first UX** improves onboarding and debugging
+4. **Explicit agent loop** makes reasoning flow transparent
 
-### Key Benefits
-- Single binary deployment (no Node.js required)
-- Lower memory footprint (~50-80% reduction)
-- Faster startup (sub-second)
-- No GC pauses under load
-- Easier cross-platform distribution
+Estimated time for Phase 4 (Nanobot Adoption): **~7 days**
 
-### Scope Simplifications Applied
-- WhatsApp excluded (eliminated highest-risk integration)
-- Native Rust plugins only (no JS runtime embedding)
-- **Total savings: 10-14 weeks**
-
-The plan is ready for implementation.
+The plan prioritizes architectural improvements before adding more features, ensuring the foundation remains solid as complexity grows.

@@ -1,6 +1,7 @@
 //! CLI module - Command line interface definitions
 
 pub mod config;
+pub mod cron;
 
 use clap::{Parser, Subcommand};
 
@@ -20,6 +21,9 @@ pub enum Commands {
 
     /// Manage configuration
     Config(ConfigArgs),
+
+    /// Manage cron jobs
+    Cron(CronArgs),
 
     /// Print version information
     Version,
@@ -69,5 +73,63 @@ pub enum ConfigAction {
         /// Output path
         #[arg(short, long, default_value = "config.yaml")]
         output: String,
+    },
+}
+
+/// Arguments for the cron command
+#[derive(Parser, Debug)]
+pub struct CronArgs {
+    /// Path to configuration file (to determine cron store location)
+    #[arg(short, long, env = "BXNODE_CONFIG")]
+    pub config: Option<String>,
+
+    #[command(subcommand)]
+    pub action: CronAction,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CronAction {
+    /// List all cron jobs
+    List,
+
+    /// Add a new cron job
+    Add {
+        /// Unique job ID
+        #[arg(short, long)]
+        id: String,
+
+        /// Cron schedule (6-field: sec min hour day month weekday)
+        #[arg(short, long)]
+        schedule: String,
+
+        /// Job payload as JSON
+        #[arg(short, long, default_value = "{}")]
+        payload: String,
+
+        /// Human-readable description
+        #[arg(short, long)]
+        description: Option<String>,
+    },
+
+    /// Remove a cron job
+    Remove {
+        /// Job ID to remove
+        id: String,
+    },
+
+    /// Manually trigger a cron job
+    Run {
+        /// Job ID to run
+        id: String,
+    },
+
+    /// Show recent runs for a job
+    Runs {
+        /// Job ID (optional, shows all if not specified)
+        id: Option<String>,
+
+        /// Number of runs to show
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
     },
 }

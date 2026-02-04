@@ -199,6 +199,7 @@ fn test_config_serialization_roundtrip() {
         channels: ChannelsConfig::default(),
         providers: ProvidersConfig::default(),
         plugins: PluginsConfig::default(),
+        cron: CronConfig::default(),
     };
 
     // Serialize to YAML

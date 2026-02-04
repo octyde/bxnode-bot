@@ -1,11 +1,70 @@
 //! Agent module - AI agent execution runtime
 //!
-//! This module implements the core agent loop:
-//! 1. Receive message
-//! 2. Build context (history, tools, system prompt)
-//! 3. Call LLM provider
-//! 4. Execute tool calls (if any)
-//! 5. Return response
+//! This module implements the core agent loop for processing user messages
+//! and generating AI-powered responses.
+//!
+//! # Agent Loop Architecture
+//!
+//! The agent follows a standard agentic loop pattern:
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────┐
+//! │                    Agent Loop                           │
+//! ├─────────────────────────────────────────────────────────┤
+//! │  1. Receive message from channel                        │
+//! │         ↓                                               │
+//! │  2. Build context                                       │
+//! │     - Load conversation history                         │
+//! │     - Apply system prompt                               │
+//! │     - Attach available tools                            │
+//! │         ↓                                               │
+//! │  3. Call LLM provider                                   │
+//! │     - Stream or batch response                          │
+//! │         ↓                                               │
+//! │  4. Check for tool calls                                │
+//! │     ├─ No tools → Return response                       │
+//! │     └─ Has tools → Execute tools, go to step 3          │
+//! │         ↓                                               │
+//! │  5. Return final response to channel                    │
+//! └─────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! # Key Components
+//!
+//! - [`AgentContext`] - Manages conversation history and token limits
+//! - [`AgentExecutor`] - Runs the agent loop with a provider
+//! - [`ToolRegistry`] - Registry of available tools for the agent
+//!
+//! # Usage
+//!
+//! ```ignore
+//! use bxnode_bot::agent::{AgentConfig, AgentContext, AgentExecutor, ToolRegistry};
+//!
+//! // Create executor with provider and tools
+//! let executor = AgentExecutor::new(provider, tools, config);
+//!
+//! // Create context for conversation
+//! let mut context = AgentContext::default();
+//!
+//! // Execute a turn
+//! let result = executor.execute(&mut context, "Hello!").await?;
+//! println!("Response: {}", result.content);
+//! ```
+//!
+//! # Streaming
+//!
+//! The agent supports streaming responses via `execute_stream`:
+//!
+//! ```ignore
+//! executor.execute_stream(&mut context, "Hello!", |event| {
+//!     match event {
+//!         AgentEvent::TextDelta { content } => print!("{}", content),
+//!         AgentEvent::ToolCall { call } => println!("Calling: {}", call.name),
+//!         AgentEvent::Completed { .. } => println!("\nDone!"),
+//!         _ => {}
+//!     }
+//! }).await?;
+//! ```
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +74,11 @@ pub mod tools;
 
 #[cfg(test)]
 mod tools_tests;
+
+// Re-export public API
+pub use context::AgentContext;
+pub use execution::{AgentEvent, AgentExecutor, ExecutionResult, ExecutionUsage};
+pub use tools::{Tool, ToolCall, ToolDefinition, ToolRegistry, ToolResult};
 
 /// Agent configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
