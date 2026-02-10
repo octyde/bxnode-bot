@@ -124,6 +124,37 @@ impl ChannelRegistry {
         }
     }
 
+    /// Check if a channel supports message editing
+    pub async fn supports_edit(&self, channel_id: &str) -> bool {
+        let channels = self.channels.read().await;
+        match channels.get(channel_id) {
+            Some(channel) => {
+                let ch = channel.read().await;
+                ch.supports_edit()
+            }
+            None => false,
+        }
+    }
+
+    /// Edit an existing message in a channel
+    pub async fn edit_message(
+        &self,
+        channel_id: &str,
+        chat_id: &str,
+        message_id: &str,
+        new_content: &str,
+    ) -> anyhow::Result<()> {
+        let channels = self.channels.read().await;
+
+        match channels.get(channel_id) {
+            Some(channel) => {
+                let ch = channel.read().await;
+                ch.edit_message(chat_id, message_id, new_content).await
+            }
+            None => Err(anyhow::anyhow!("Channel not found: {}", channel_id)),
+        }
+    }
+
     /// Get the number of registered channels
     pub async fn channel_count(&self) -> usize {
         let channels = self.channels.read().await;

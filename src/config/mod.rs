@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+use crate::skills::SkillSyncSource;
+
 /// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -26,9 +28,17 @@ pub struct Config {
     #[serde(default)]
     pub plugins: PluginsConfig,
 
+    /// Skills configurations (OpenClaw/Agent Skills)
+    #[serde(default)]
+    pub skills: SkillsConfig,
+
     /// Cron scheduler configuration
     #[serde(default)]
     pub cron: CronConfig,
+
+    /// Memory configuration
+    #[serde(default)]
+    pub memory: MemoryConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +92,15 @@ pub struct ChannelsConfig {
 
     /// Slack channel configuration
     pub slack: Option<SlackConfig>,
+
+    /// LINE channel configuration
+    pub line: Option<LineConfig>,
+
+    /// Signal channel configuration
+    pub signal: Option<SignalConfig>,
+
+    /// Feishu channel configuration
+    pub feishu: Option<FeishuConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +130,53 @@ pub struct SlackConfig {
 
     /// App token
     pub app_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LineConfig {
+    /// Channel access token
+    pub channel_access_token: String,
+
+    /// Channel secret
+    pub channel_secret: String,
+
+    /// Allowed user IDs (empty = allow all)
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignalConfig {
+    /// signal-cli-rest-api base URL
+    #[serde(default = "default_signal_api_url")]
+    pub api_url: String,
+
+    /// Registered phone number
+    pub phone_number: String,
+
+    /// Allowed phone numbers (empty = allow all)
+    #[serde(default)]
+    pub allowed_numbers: Vec<String>,
+}
+
+fn default_signal_api_url() -> String {
+    "http://localhost:8080".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeishuConfig {
+    /// App ID
+    pub app_id: String,
+
+    /// App Secret
+    pub app_secret: String,
+
+    /// Verification token
+    pub verification_token: String,
+
+    /// Allowed user IDs (empty = allow all)
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -211,6 +277,73 @@ pub struct CronJobConfig {
     pub enabled: bool,
 }
 
+/// Memory system configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryConfig {
+    /// Enable the memory system
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Path to the memory store file (JSONL format)
+    #[serde(default = "default_memory_store")]
+    pub store_path: String,
+
+    /// Maximum number of results to return from search
+    #[serde(default = "default_max_results")]
+    pub max_results: usize,
+
+    /// Default TTL for memories in days (0 = no expiry)
+    #[serde(default = "default_ttl_days")]
+    pub ttl_days: u32,
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            store_path: default_memory_store(),
+            max_results: default_max_results(),
+            ttl_days: default_ttl_days(),
+        }
+    }
+}
+
+/// Skills system configuration (OpenClaw/Agent Skills)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsConfig {
+    /// Enable the skills system
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Directories to scan for skills
+    #[serde(default = "default_skill_dirs")]
+    pub directories: Vec<String>,
+
+    /// Skills to explicitly enable (empty = all discovered skills)
+    #[serde(default)]
+    pub enabled_skills: Vec<String>,
+
+    /// Skills to explicitly disable
+    #[serde(default)]
+    pub disabled_skills: Vec<String>,
+
+    /// Sources to sync skills from
+    #[serde(default)]
+    pub sync_sources: Vec<SkillSyncSource>,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            directories: default_skill_dirs(),
+            enabled_skills: Vec::new(),
+            disabled_skills: Vec::new(),
+            sync_sources: Vec::new(),
+        }
+    }
+}
+
 // Default value functions
 fn default_host() -> String {
     "0.0.0.0".to_string()
@@ -230,6 +363,25 @@ fn default_ollama_url() -> String {
 
 fn default_cron_store() -> String {
     "~/.bxnode-bot/cron.json".to_string()
+}
+
+fn default_memory_store() -> String {
+    "~/.bxnode-bot/memory.jsonl".to_string()
+}
+
+fn default_max_results() -> usize {
+    5
+}
+
+fn default_ttl_days() -> u32 {
+    90
+}
+
+fn default_skill_dirs() -> Vec<String> {
+    vec![
+        "~/.bxnode/skills".to_string(),
+        "./skills".to_string(),
+    ]
 }
 
 #[cfg(test)]

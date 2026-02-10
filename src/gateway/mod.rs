@@ -18,11 +18,15 @@ use axum::{
 };
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
+use tokio::sync::RwLock;
+
 use crate::agent::{AgentConfig, AgentContext, AgentExecutor, ToolRegistry};
 use crate::channels::{ChannelEvent, ChannelRegistry, IncomingMessage, MessageContent, OutgoingMessage};
 use crate::cli::ServeArgs;
 use crate::cron::{CronEvent, CronJob, CronScheduler, CronStore};
+use crate::memory::{MemoryScope, MemoryStore};
 use crate::providers::ProviderRegistry;
+use crate::skills::SkillRegistry;
 
 /// Embedded UI assets
 #[derive(rust_embed::RustEmbed)]
@@ -38,6 +42,8 @@ pub struct AppState {
     pub providers: Arc<ProviderRegistry>,
     pub channels: Arc<ChannelRegistry>,
     pub cron: Arc<CronScheduler>,
+    pub memory: Arc<RwLock<MemoryStore>>,
+    pub skills: Option<Arc<RwLock<SkillRegistry>>>,
 }
 
 /// Start the gateway server
@@ -73,9 +79,34 @@ pub async fn serve(args: ServeArgs) -> Result<()> {
     // Wrap provider registry in Arc for sharing
     let provider_registry = Arc::new(provider_registry);
 
+    // Initialize memory store
+    let memory_store = if config.memory.enabled {
+        let store_path = expand_path(&config.memory.store_path);
+        // Ensure the parent directory exists
+        if let Some(parent) = std::path::Path::new(&store_path).parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        match MemoryStore::open(&store_path) {
+            Ok(store) => {
+                tracing::info!("Loaded memory store with {} record(s)", store.len());
+                Arc::new(RwLock::new(store))
+            }
+            Err(e) => {
+                tracing::error!("Failed to load memory store: {}, using in-memory", e);
+                Arc::new(RwLock::new(MemoryStore::in_memory()))
+            }
+        }
+    } else {
+        tracing::info!("Memory system disabled");
+        Arc::new(RwLock::new(MemoryStore::in_memory()))
+    };
+
     // Start channel event handler in background
     let event_channel_registry = channel_registry.clone();
     let event_provider_registry = provider_registry.clone();
+    let event_memory_store = memory_store.clone();
     let default_model = config
         .agents
         .defaults
@@ -89,6 +120,7 @@ pub async fn serve(args: ServeArgs) -> Result<()> {
                 &mut event_rx,
                 &event_channel_registry,
                 &event_provider_registry,
+                &event_memory_store,
                 &default_model,
             )
             .await;
@@ -134,19 +166,53 @@ pub async fn serve(args: ServeArgs) -> Result<()> {
         });
     }
 
+    // Initialize skills registry
+    let skills_registry = if config.skills.enabled {
+        match SkillRegistry::from_config(&config.skills) {
+            Ok(registry) => {
+                let skill_count = registry.count();
+                let active_count = registry.active_count();
+                tracing::info!(
+                    "Loaded {} skill(s), {} active",
+                    skill_count,
+                    active_count
+                );
+                Some(Arc::new(RwLock::new(registry)))
+            }
+            Err(e) => {
+                tracing::error!("Failed to initialize skills registry: {}", e);
+                None
+            }
+        }
+    } else {
+        tracing::info!("Skills system disabled");
+        None
+    };
+
     let state = AppState {
         providers: provider_registry.clone(),
         channels: channel_registry.clone(),
         cron: cron_scheduler.clone(),
+        memory: memory_store.clone(),
+        skills: skills_registry,
     };
 
     // Build the router
     let app = Router::new()
-        // Health check
+        // Health check endpoints
         .route("/health", get(http::health))
+        .route("/health/detailed", get(http::health_detailed))
+        .route("/stats", get(http::stats))
         // OpenAI-compatible API
         .route("/v1/chat/completions", post(http::chat_completions))
         .route("/v1/models", get(http::list_models))
+        // Skills API endpoints
+        .route("/api/skills", get(http::list_skills))
+        .route("/api/skills/config", get(http::skills_config))
+        .route("/api/skills/sync", post(http::sync_skills))
+        .route("/api/skills/:name", get(http::get_skill))
+        .route("/api/skills/:name/enable", post(http::enable_skill))
+        .route("/api/skills/:name/disable", post(http::disable_skill))
         // WebSocket endpoint
         .route("/ws", get(ws::handler))
         // Static UI files
@@ -175,6 +241,7 @@ pub async fn serve(args: ServeArgs) -> Result<()> {
 }
 
 /// Register channels from configuration
+#[allow(unused_variables)]
 async fn register_channels_from_config(registry: &ChannelRegistry, config: &crate::Config) {
     // Register Telegram channel if configured
     #[cfg(feature = "channel-telegram")]
@@ -236,11 +303,11 @@ async fn handle_channel_events(
     event_rx: &mut tokio::sync::mpsc::Receiver<ChannelEvent>,
     registry: &Arc<ChannelRegistry>,
     providers: &Arc<ProviderRegistry>,
+    memory: &Arc<RwLock<MemoryStore>>,
     default_model: &str,
 ) {
     // Simple conversation context cache (keyed by chat_id)
     use std::collections::HashMap;
-    use tokio::sync::RwLock;
 
     let contexts: Arc<RwLock<HashMap<String, AgentContext>>> =
         Arc::new(RwLock::new(HashMap::new()));
@@ -271,12 +338,13 @@ async fn handle_channel_events(
                 // Process message in a separate task
                 let registry = registry.clone();
                 let providers = providers.clone();
+                let memory = memory.clone();
                 let contexts = contexts.clone();
                 let model = default_model.to_string();
 
                 tokio::spawn(async move {
                     if let Err(e) =
-                        process_channel_message(msg, &registry, &providers, &contexts, &model).await
+                        process_channel_message(msg, &registry, &providers, &memory, &contexts, &model).await
                     {
                         tracing::error!("Failed to process message: {}", e);
                     }
@@ -291,11 +359,10 @@ async fn process_channel_message(
     msg: IncomingMessage,
     registry: &Arc<ChannelRegistry>,
     providers: &Arc<ProviderRegistry>,
-    contexts: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, AgentContext>>>,
+    memory: &Arc<RwLock<MemoryStore>>,
+    contexts: &Arc<RwLock<std::collections::HashMap<String, AgentContext>>>,
     model: &str,
 ) -> anyhow::Result<()> {
-    use std::collections::HashMap;
-
     // Only process text messages for now
     let text = match msg.content.as_text() {
         Some(t) => t.to_string(),
@@ -331,44 +398,157 @@ async fn process_channel_message(
         }
     };
 
-    // Create agent executor
-    let tools = Arc::new(ToolRegistry::new());
+    // Create memory scope for this conversation
+    let memory_scope = MemoryScope {
+        agent_id: "default".to_string(),
+        channel_id: Some(msg.channel.clone()),
+        user_id: Some(msg.user_id.clone()),
+        session_id: None,
+    };
+
+    // Create agent executor with memory tools
+    let tools = Arc::new(ToolRegistry::with_memory(memory.clone(), memory_scope));
     let config = AgentConfig {
         model: model.to_string(),
         ..Default::default()
     };
     let executor = AgentExecutor::new(provider, tools, config);
 
-    // Execute the agent
-    match executor.execute(&mut context, &text).await {
-        Ok(result) => {
+    // Check if channel supports streaming updates via message editing
+    let supports_streaming = registry.supports_edit(&msg.channel).await;
+
+    if supports_streaming {
+        // Use streaming with message editing for real-time updates
+        process_with_streaming(
+            &executor,
+            &mut context,
+            &text,
+            registry,
+            &msg,
+            &context_key,
+            contexts,
+        )
+        .await
+    } else {
+        // Fall back to non-streaming execution
+        match executor.execute(&mut context, &text).await {
+            Ok(result) => {
+                // Save updated context
+                {
+                    let mut contexts_write = contexts.write().await;
+                    contexts_write.insert(context_key, context);
+                }
+
+                // Send response back to channel
+                send_reply(&registry, &msg, &result.content).await?;
+
+                tracing::info!(
+                    "Responded to chat '{}' with {} tokens",
+                    msg.chat_id,
+                    result.usage.total_tokens
+                );
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!("Agent execution failed: {}", e);
+                send_reply(
+                    &registry,
+                    &msg,
+                    &format!("Sorry, I encountered an error: {}", e),
+                )
+                .await?;
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Process message with streaming updates (for channels that support message editing)
+async fn process_with_streaming(
+    executor: &AgentExecutor,
+    context: &mut AgentContext,
+    text: &str,
+    registry: &Arc<ChannelRegistry>,
+    msg: &IncomingMessage,
+    context_key: &str,
+    contexts: &Arc<RwLock<std::collections::HashMap<String, AgentContext>>>,
+) -> anyhow::Result<()> {
+    use crate::agent::AgentEvent;
+
+    // Send initial "thinking" message
+    let initial_message = OutgoingMessage {
+        chat_id: msg.chat_id.clone(),
+        content: MessageContent::Text {
+            text: "▌".to_string(), // Typing indicator
+        },
+        reply_to: Some(msg.id.clone()),
+        parse_mode: None,
+    };
+
+    let message_id = registry.send(&msg.channel, initial_message).await?;
+
+    // Execute with streaming
+    // Note: For now we just accumulate chunks and update at the end.
+    // Future enhancement: throttled updates during streaming.
+    let mut _accumulated_content = String::new();
+
+    let result = executor
+        .execute_stream(context, text, |event| {
+            match event {
+                AgentEvent::TextDelta { content } => {
+                    _accumulated_content.push_str(&content);
+                }
+                AgentEvent::ToolCall { call } => {
+                    tracing::debug!("Tool call during stream: {}", call.name);
+                }
+                AgentEvent::ToolResult { result } => {
+                    tracing::debug!("Tool result: {}", if result.success { "success" } else { "error" });
+                }
+                AgentEvent::Error { message } => {
+                    tracing::error!("Streaming error: {}", message);
+                }
+                _ => {}
+            }
+        })
+        .await;
+
+    // Final update with complete content
+    match result {
+        Ok(exec_result) => {
             // Save updated context
             {
                 let mut contexts_write = contexts.write().await;
-                contexts_write.insert(context_key, context);
+                contexts_write.insert(context_key.to_string(), context.clone());
             }
 
-            // Send response back to channel
-            send_reply(&registry, &msg, &result.content).await?;
+            // Final edit with complete response
+            if let Err(e) = registry
+                .edit_message(&msg.channel, &msg.chat_id, &message_id, &exec_result.content)
+                .await
+            {
+                tracing::warn!("Failed to edit final message, sending new: {}", e);
+                send_reply(registry, msg, &exec_result.content).await?;
+            }
 
             tracing::info!(
-                "Responded to chat '{}' with {} tokens",
+                "Streamed response to chat '{}' with {} tokens",
                 msg.chat_id,
-                result.usage.total_tokens
+                exec_result.usage.total_tokens
             );
+            Ok(())
         }
         Err(e) => {
-            tracing::error!("Agent execution failed: {}", e);
-            send_reply(
-                &registry,
-                &msg,
-                &format!("Sorry, I encountered an error: {}", e),
-            )
-            .await?;
+            tracing::error!("Streaming agent execution failed: {}", e);
+            let error_msg = format!("Sorry, I encountered an error: {}", e);
+            if let Err(_) = registry
+                .edit_message(&msg.channel, &msg.chat_id, &message_id, &error_msg)
+                .await
+            {
+                send_reply(registry, msg, &error_msg).await?;
+            }
+            Ok(())
         }
     }
-
-    Ok(())
 }
 
 /// Send a reply to a channel message

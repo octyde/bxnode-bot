@@ -35,6 +35,15 @@ async fn main() -> Result<()> {
         Commands::Cron(args) => {
             bxnode_bot::cli::cron::execute(args)?;
         }
+        Commands::Memory(args) => {
+            bxnode_bot::cli::memory::execute(args)?;
+        }
+        Commands::Plugin(args) => {
+            bxnode_bot::cli::plugin::execute(args)?;
+        }
+        Commands::Skill(args) => {
+            bxnode_bot::cli::skill::execute(args)?;
+        }
         Commands::Version => {
             println!("bxnode-bot {}", env!("CARGO_PKG_VERSION"));
         }

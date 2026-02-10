@@ -509,6 +509,42 @@ impl Channel for SlackChannel {
         self.connected.load(Ordering::SeqCst)
     }
 
+    fn supports_edit(&self) -> bool {
+        true
+    }
+
+    async fn edit_message(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+        new_content: &str,
+    ) -> anyhow::Result<()> {
+        let params = vec![
+            ("channel", chat_id),
+            ("ts", message_id),
+            ("text", new_content),
+        ];
+
+        let response: SlackResponse<PostMessageResponse> = self
+            .client
+            .post("https://slack.com/api/chat.update")
+            .header("Authorization", format!("Bearer {}", self.config.bot_token))
+            .form(&params)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if !response.ok {
+            return Err(anyhow::anyhow!(
+                "Failed to update message: {}",
+                response.error.unwrap_or_else(|| "Unknown error".to_string())
+            ));
+        }
+
+        Ok(())
+    }
+
     fn status(&self) -> ChannelStatus {
         let error = if self.config.bot_token.is_empty() {
             Some("Bot token not configured".to_string())
@@ -665,5 +701,17 @@ mod tests {
 
         let msg = SlackChannel::convert_message(&slack_msg, true).unwrap();
         assert_eq!(msg.metadata["is_mention"], true);
+    }
+
+    #[test]
+    fn test_supports_edit() {
+        let config = SlackConfig {
+            bot_token: "xoxb-test".to_string(),
+            app_token: "xapp-test".to_string(),
+            ..Default::default()
+        };
+        let channel = SlackChannel::new(config);
+
+        assert!(channel.supports_edit());
     }
 }

@@ -2,6 +2,9 @@
 
 pub mod config;
 pub mod cron;
+pub mod memory;
+pub mod plugin;
+pub mod skill;
 
 use clap::{Parser, Subcommand};
 
@@ -24,6 +27,15 @@ pub enum Commands {
 
     /// Manage cron jobs
     Cron(CronArgs),
+
+    /// Manage memory storage
+    Memory(MemoryArgs),
+
+    /// Manage plugins
+    Plugin(PluginArgs),
+
+    /// Manage agent skills (OpenClaw/Agent Skills)
+    Skill(SkillArgs),
 
     /// Print version information
     Version,
@@ -131,5 +143,189 @@ pub enum CronAction {
         /// Number of runs to show
         #[arg(short, long, default_value = "10")]
         limit: usize,
+    },
+}
+
+/// Arguments for the memory command
+#[derive(Parser, Debug)]
+pub struct MemoryArgs {
+    /// Path to configuration file (to determine memory store location)
+    #[arg(short, long, env = "BXNODE_CONFIG")]
+    pub config: Option<String>,
+
+    #[command(subcommand)]
+    pub action: MemoryAction,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MemoryAction {
+    /// List memories (optionally filtered by scope)
+    List {
+        /// Filter by agent ID
+        #[arg(long)]
+        agent: Option<String>,
+
+        /// Filter by channel ID
+        #[arg(long)]
+        channel: Option<String>,
+
+        /// Filter by user ID
+        #[arg(long)]
+        user: Option<String>,
+
+        /// Maximum number of results
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+    },
+
+    /// Search memories by query
+    Search {
+        /// Search query
+        query: String,
+
+        /// Filter by agent ID
+        #[arg(long)]
+        agent: Option<String>,
+
+        /// Maximum number of results
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
+    },
+
+    /// Show memory statistics
+    Stats,
+
+    /// Get a specific memory by ID
+    Get {
+        /// Memory ID
+        id: String,
+    },
+
+    /// Delete a memory (soft delete)
+    Delete {
+        /// Memory ID to delete
+        id: String,
+    },
+
+    /// Compact the memory store (remove deleted records)
+    Compact,
+}
+
+/// Arguments for the plugin command
+#[derive(Parser, Debug)]
+pub struct PluginArgs {
+    /// Path to configuration file
+    #[arg(short, long, env = "BXNODE_CONFIG")]
+    pub config: Option<String>,
+
+    #[command(subcommand)]
+    pub action: PluginAction,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PluginAction {
+    /// List available plugins
+    List {
+        /// Show all plugins (including disabled)
+        #[arg(short, long)]
+        all: bool,
+    },
+
+    /// Show detailed information about a plugin
+    Info {
+        /// Plugin ID
+        id: String,
+    },
+
+    /// Enable a plugin
+    Enable {
+        /// Plugin ID to enable
+        id: String,
+    },
+
+    /// Disable a plugin
+    Disable {
+        /// Plugin ID to disable
+        id: String,
+    },
+}
+
+/// Arguments for the skill command
+#[derive(Parser, Debug)]
+pub struct SkillArgs {
+    /// Path to configuration file
+    #[arg(short, long, env = "BXNODE_CONFIG")]
+    pub config: Option<String>,
+
+    #[command(subcommand)]
+    pub action: SkillAction,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SkillAction {
+    /// List available skills
+    List {
+        /// Show all skills (including inactive)
+        #[arg(short, long)]
+        all: bool,
+
+        /// Show detailed information
+        #[arg(short, long)]
+        verbose: bool,
+    },
+
+    /// Show detailed information about a skill
+    Info {
+        /// Skill name
+        name: String,
+    },
+
+    /// Install a skill from GitHub URL or registry
+    Install {
+        /// GitHub URL or skill slug
+        source: String,
+
+        /// Target directory for installation
+        #[arg(short, long)]
+        dir: Option<String>,
+
+        /// Force reinstall if skill already exists
+        #[arg(short, long)]
+        force: bool,
+    },
+
+    /// Update installed skills
+    Update {
+        /// Specific skill to update (all if not specified)
+        name: Option<String>,
+
+        /// Force update even if skill appears up-to-date
+        #[arg(short, long)]
+        force: bool,
+    },
+
+    /// Enable a skill (shows configuration instructions)
+    Enable {
+        /// Skill name to enable
+        name: String,
+    },
+
+    /// Disable a skill (shows configuration instructions)
+    Disable {
+        /// Skill name to disable
+        name: String,
+    },
+
+    /// Sync skills from configured sources or awesome-openclaw-skills
+    Sync {
+        /// Force re-download even if skills exist
+        #[arg(short, long)]
+        force: bool,
+    },
+
+    /// Search for skills by name or description
+    Search {
+        /// Search query
+        query: String,
     },
 }

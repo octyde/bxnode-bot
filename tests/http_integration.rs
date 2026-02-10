@@ -9,9 +9,12 @@ use axum::{
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
+use tokio::sync::RwLock;
+
 use bxnode_bot::channels::ChannelRegistry;
 use bxnode_bot::cron::CronScheduler;
 use bxnode_bot::gateway::AppState;
+use bxnode_bot::memory::MemoryStore;
 use bxnode_bot::providers::ProviderRegistry;
 
 /// Create the test app router with empty registry
@@ -22,10 +25,13 @@ fn create_test_app() -> axum::Router {
     let providers = ProviderRegistry::new();
     let channels = ChannelRegistry::new();
     let cron = CronScheduler::new();
+    let memory = MemoryStore::in_memory();
     let state = AppState {
         providers: Arc::new(providers),
         channels: Arc::new(channels),
         cron: Arc::new(cron),
+        memory: Arc::new(RwLock::new(memory)),
+        skills: None,
     };
 
     axum::Router::new()
@@ -45,11 +51,14 @@ fn create_test_app_with_ollama() -> axum::Router {
     providers.register(Arc::new(OllamaProvider::new(OllamaConfig::default())));
     let channels = ChannelRegistry::new();
     let cron = CronScheduler::new();
+    let memory = MemoryStore::in_memory();
 
     let state = AppState {
         providers: Arc::new(providers),
         channels: Arc::new(channels),
         cron: Arc::new(cron),
+        memory: Arc::new(RwLock::new(memory)),
+        skills: None,
     };
 
     axum::Router::new()

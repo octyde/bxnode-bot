@@ -342,6 +342,35 @@ impl Channel for TelegramChannel {
         self.connected.load(Ordering::SeqCst)
     }
 
+    fn supports_edit(&self) -> bool {
+        true
+    }
+
+    async fn edit_message(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+        new_content: &str,
+    ) -> anyhow::Result<()> {
+        let bot = self
+            .bot
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Telegram bot not initialized"))?;
+
+        let chat_id: i64 = chat_id
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid chat ID"))?;
+
+        let message_id: i32 = message_id
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid message ID"))?;
+
+        bot.edit_message_text(ChatId(chat_id), teloxide::types::MessageId(message_id), new_content)
+            .await?;
+
+        Ok(())
+    }
+
     fn status(&self) -> ChannelStatus {
         ChannelStatus {
             id: self.id().to_string(),
@@ -462,5 +491,16 @@ mod tests {
         let status = channel.status();
         assert!(!status.connected);
         assert!(status.error.is_none());
+    }
+
+    #[test]
+    fn test_supports_edit() {
+        let config = TelegramConfig {
+            bot_token: "test_token".to_string(),
+            ..Default::default()
+        };
+        let channel = TelegramChannel::new(config);
+
+        assert!(channel.supports_edit());
     }
 }

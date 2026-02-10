@@ -6,8 +6,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serenity::all::{
-    ChannelId, Context, CreateMessage, EventHandler, GatewayIntents, Message as SerenityMessage,
-    Ready,
+    ChannelId, Context, CreateMessage, EditMessage, EventHandler, GatewayIntents,
+    Message as SerenityMessage, MessageId, Ready,
 };
 use serenity::Client;
 use tokio::sync::{mpsc, RwLock};
@@ -373,6 +373,39 @@ impl Channel for DiscordChannel {
         self.connected.load(Ordering::SeqCst)
     }
 
+    fn supports_edit(&self) -> bool {
+        true
+    }
+
+    async fn edit_message(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+        new_content: &str,
+    ) -> anyhow::Result<()> {
+        let http = self.http.read().await;
+        let http = http
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Discord client not initialized"))?;
+
+        let channel_id: u64 = chat_id
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid channel ID"))?;
+
+        let msg_id: u64 = message_id
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid message ID"))?;
+
+        let channel = ChannelId::new(channel_id);
+        let builder = EditMessage::new().content(new_content);
+
+        channel
+            .edit_message(http, MessageId::new(msg_id), builder)
+            .await?;
+
+        Ok(())
+    }
+
     fn status(&self) -> ChannelStatus {
         ChannelStatus {
             id: self.id().to_string(),
@@ -480,5 +513,16 @@ mod tests {
         let status = channel.status();
         assert!(!status.connected);
         assert!(status.error.is_none());
+    }
+
+    #[test]
+    fn test_supports_edit() {
+        let config = DiscordConfig {
+            bot_token: "test_token".to_string(),
+            ..Default::default()
+        };
+        let channel = DiscordChannel::new(config);
+
+        assert!(channel.supports_edit());
     }
 }

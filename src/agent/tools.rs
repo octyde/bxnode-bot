@@ -1,8 +1,13 @@
 //! Tool system for agents
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::sync::RwLock;
+
+use crate::memory::{MemoryRecord, MemoryScope, MemoryStore};
 
 /// Tool definition for LLM consumption
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +113,15 @@ impl ToolRegistry {
         let mut registry = Self::new();
         registry.register(Box::new(EchoTool));
         registry.register(Box::new(CurrentTimeTool));
+        registry
+    }
+
+    /// Create a registry with built-in tools and memory tools
+    pub fn with_memory(memory: Arc<RwLock<MemoryStore>>, scope: MemoryScope) -> Self {
+        let mut registry = Self::with_builtins();
+        registry.register(Box::new(MemoryStoreTool::new(memory.clone(), scope.clone())));
+        registry.register(Box::new(MemoryRecallTool::new(memory.clone(), scope.clone())));
+        registry.register(Box::new(MemoryForgetTool::new(memory, scope)));
         registry
     }
 
@@ -319,6 +333,289 @@ impl Tool for CalculatorTool {
         };
 
         Ok(result.to_string())
+    }
+}
+
+// ============================================================================
+// Memory Tools
+// ============================================================================
+
+/// Memory store tool - stores information in long-term memory
+pub struct MemoryStoreTool {
+    store: Arc<RwLock<MemoryStore>>,
+    scope: MemoryScope,
+}
+
+impl MemoryStoreTool {
+    pub fn new(store: Arc<RwLock<MemoryStore>>, scope: MemoryScope) -> Self {
+        Self { store, scope }
+    }
+}
+
+#[async_trait]
+impl Tool for MemoryStoreTool {
+    fn name(&self) -> &str {
+        "memory_store"
+    }
+
+    fn description(&self) -> &str {
+        "Store information in long-term memory for later recall. Use this to remember important facts, user preferences, or context that should persist across conversations."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "The content to remember"
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "A short summary of the content (optional, for search results)"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Tags to help categorize and find this memory"
+                },
+                "importance": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10,
+                    "default": 5,
+                    "description": "Importance level (0-10). Higher values are prioritized in search results."
+                }
+            },
+            "required": ["content"]
+        })
+    }
+
+    async fn execute(&self, input: serde_json::Value) -> anyhow::Result<String> {
+        let content = input
+            .get("content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'content' parameter"))?;
+
+        let summary = input
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let tags: Vec<String> = input
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let importance = input
+            .get("importance")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(5) as u8;
+
+        let record = MemoryRecord::builder()
+            .scope(self.scope.clone())
+            .content(content)
+            .summary_opt(summary)
+            .tags(tags)
+            .importance(importance.min(10))
+            .build()
+            .map_err(|e| anyhow::anyhow!("Failed to build memory record: {}", e))?;
+
+        let id = {
+            let mut store = self.store.write().await;
+            store.store(record)?
+        };
+
+        Ok(json!({
+            "stored": true,
+            "id": id,
+            "message": "Memory stored successfully"
+        })
+        .to_string())
+    }
+}
+
+/// Memory recall tool - searches long-term memory
+pub struct MemoryRecallTool {
+    store: Arc<RwLock<MemoryStore>>,
+    scope: MemoryScope,
+}
+
+impl MemoryRecallTool {
+    pub fn new(store: Arc<RwLock<MemoryStore>>, scope: MemoryScope) -> Self {
+        Self { store, scope }
+    }
+}
+
+#[async_trait]
+impl Tool for MemoryRecallTool {
+    fn name(&self) -> &str {
+        "memory_recall"
+    }
+
+    fn description(&self) -> &str {
+        "Search long-term memory for relevant information. Returns memories matching the query, ranked by relevance."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query to find relevant memories"
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 5,
+                    "maximum": 20,
+                    "description": "Maximum number of results to return"
+                },
+                "min_importance": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10,
+                    "description": "Only return memories with at least this importance level"
+                }
+            },
+            "required": ["query"]
+        })
+    }
+
+    async fn execute(&self, input: serde_json::Value) -> anyhow::Result<String> {
+        let query = input
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'query' parameter"))?;
+
+        let limit = input
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(5) as usize;
+
+        let min_importance = input
+            .get("min_importance")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u8);
+
+        let results = {
+            let store = self.store.read().await;
+            match min_importance {
+                Some(min) => store.search_with_importance(query, &self.scope, limit, min),
+                None => store.search(query, &self.scope, limit),
+            }
+        };
+
+        if results.is_empty() {
+            return Ok(json!({
+                "found": false,
+                "count": 0,
+                "memories": [],
+                "message": "No memories found matching the query"
+            })
+            .to_string());
+        }
+
+        let memories: Vec<serde_json::Value> = results
+            .into_iter()
+            .map(|r| {
+                json!({
+                    "id": r.id,
+                    "score": format!("{:.2}", r.score),
+                    "summary": r.summary,
+                    "content_preview": r.content_preview,
+                    "tags": r.tags,
+                    "importance": r.importance,
+                    "created_at": r.created_at
+                })
+            })
+            .collect();
+
+        Ok(json!({
+            "found": true,
+            "count": memories.len(),
+            "memories": memories
+        })
+        .to_string())
+    }
+}
+
+/// Memory forget tool - removes a memory by ID
+pub struct MemoryForgetTool {
+    store: Arc<RwLock<MemoryStore>>,
+    scope: MemoryScope,
+}
+
+impl MemoryForgetTool {
+    pub fn new(store: Arc<RwLock<MemoryStore>>, scope: MemoryScope) -> Self {
+        Self { store, scope }
+    }
+}
+
+#[async_trait]
+impl Tool for MemoryForgetTool {
+    fn name(&self) -> &str {
+        "memory_forget"
+    }
+
+    fn description(&self) -> &str {
+        "Remove a memory by its ID. The memory will be soft-deleted (kept for audit but no longer searchable)."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "The ID of the memory to forget"
+                }
+            },
+            "required": ["id"]
+        })
+    }
+
+    async fn execute(&self, input: serde_json::Value) -> anyhow::Result<String> {
+        let id = input
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'id' parameter"))?;
+
+        // Verify the memory belongs to this scope before deleting
+        let can_delete = {
+            let store = self.store.read().await;
+            if let Some(record) = store.get(id) {
+                record.scope.matches(&self.scope)
+            } else {
+                false
+            }
+        };
+
+        if !can_delete {
+            return Ok(json!({
+                "deleted": false,
+                "id": id,
+                "message": "Memory not found or access denied"
+            })
+            .to_string());
+        }
+
+        let deleted = {
+            let mut store = self.store.write().await;
+            store.delete(id)?
+        };
+
+        Ok(json!({
+            "deleted": deleted,
+            "id": id,
+            "message": if deleted { "Memory forgotten" } else { "Memory was already deleted" }
+        })
+        .to_string())
     }
 }
 

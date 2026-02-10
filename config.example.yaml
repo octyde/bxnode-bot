@@ -25,6 +25,22 @@ channels:
   #   bot_token: "xoxb-YOUR-BOT-TOKEN"
   #   app_token: "xapp-YOUR-APP-TOKEN"
 
+  # line:
+  #   channel_access_token: "YOUR_CHANNEL_ACCESS_TOKEN"
+  #   channel_secret: "YOUR_CHANNEL_SECRET"
+  #   allowed_users: []  # Empty = allow all
+
+  # signal:
+  #   api_url: "http://localhost:8080"  # signal-cli-rest-api URL
+  #   phone_number: "+1234567890"
+  #   allowed_numbers: []  # Empty = allow all
+
+  # feishu:
+  #   app_id: "YOUR_APP_ID"
+  #   app_secret: "YOUR_APP_SECRET"
+  #   verification_token: "YOUR_VERIFICATION_TOKEN"
+  #   allowed_users: []  # Empty = allow all
+
 # Provider configurations
 providers:
   anthropic:
@@ -55,7 +71,50 @@ cron:
     #   description: "Daily morning summary"
     #   enabled: true
 
-# Plugin configurations
+# Memory configuration (long-term memory for agents)
+memory:
+  # Enable/disable the memory system
+  enabled: true
+  # Path to the memory store file (JSONL format)
+  store_path: "~/.bxnode-bot/memory.jsonl"
+  # Maximum number of results to return from search
+  max_results: 5
+  # Default TTL for memories in days (0 = no expiry)
+  ttl_days: 90
+
+# Plugin configurations (native Rust plugins)
 plugins:
   enabled: []
   settings: {}
+
+# Skills configuration (OpenClaw/Agent Skills)
+# Skills provide Markdown-based instructions that guide agent behavior.
+# See: https://agentskills.io/specification
+skills:
+  # Enable/disable the skills system
+  enabled: true
+
+  # Directories to scan for skills
+  # Skills are folders containing a SKILL.md file
+  directories:
+    - "~/.bxnode/skills"    # Global skills
+    - "./skills"            # Workspace skills (higher priority)
+
+  # Skills to explicitly enable (empty = all discovered skills)
+  enabled_skills: []
+
+  # Skills to explicitly disable
+  disabled_skills: []
+
+  # Sources to sync skills from (use `bxnode-bot skill sync`)
+  sync_sources: []
+    # Example: sync from awesome-openclaw-skills
+    # - repo: "VoltAgent/awesome-openclaw-skills"
+    #   branch: "main"
+    #
+    # Example: sync specific skills from a repository
+    # - repo: "openclaw/skills"
+    #   path: "skills"
+    #   skills:
+    #     - "debug-pro"
+    #     - "code-review"

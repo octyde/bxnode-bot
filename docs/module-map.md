@@ -13,6 +13,7 @@ Each module has a single responsibility and exposes a minimal public API via `mo
 | `config` | Config schema and loading | `bxnode_bot::config` |
 | `cron` | Cron scheduler and job store | `bxnode_bot::cron` |
 | `gateway` | HTTP and WebSocket server | `bxnode_bot::gateway` |
+| `memory` | Long-term memory storage and search | `bxnode_bot::memory` |
 | `plugins` | Plugin discovery and lifecycle | `bxnode_bot::plugins` |
 | `providers` | LLM client registry | `bxnode_bot::providers` |
 | `session` | Session storage and persistence | `bxnode_bot::session` |
@@ -56,11 +57,16 @@ pub use tools::{Tool, ToolCall, ToolDefinition, ToolRegistry, ToolResult};
 - Channel trait for platform adapters
 - Channel registry for multi-platform support
 - Event-driven architecture (ChannelEvent)
+- Message editing for streaming updates
 
 **Public API:**
 ```rust
 pub use registry::ChannelRegistry;
-pub trait Channel: Send + Sync { ... }
+pub trait Channel: Send + Sync {
+    fn supports_edit(&self) -> bool;
+    async fn edit_message(&self, chat_id: &str, message_id: &str, new_content: &str) -> Result<()>;
+    // ... other methods
+}
 pub struct IncomingMessage { ... }
 pub struct OutgoingMessage { ... }
 pub enum ChannelEvent { ... }
@@ -72,6 +78,9 @@ pub struct ChannelStatus { ... }
 - `telegram.rs` - Telegram adapter (feature-gated)
 - `discord.rs` - Discord adapter (feature-gated)
 - `slack.rs` - Slack adapter (feature-gated)
+- `line.rs` - LINE adapter (feature-gated)
+- `signal.rs` - Signal adapter (feature-gated)
+- `feishu.rs` - Feishu/Lark adapter (feature-gated)
 
 ---
 
@@ -83,7 +92,7 @@ pub struct ChannelStatus { ... }
 
 **Responsibilities:**
 - Command-line argument parsing
-- Subcommand routing (serve, config, cron, version)
+- Subcommand routing (serve, config, cron, memory, version)
 - Process lifecycle
 
 **Public API:**
@@ -92,11 +101,13 @@ pub fn run() -> Result<()>;
 pub struct ServeArgs { ... }
 pub struct ConfigArgs { ... }
 pub struct CronArgs { ... }
+pub struct MemoryArgs { ... }
 ```
 
 **Internal modules:**
-- `config.rs` - Config subcommands
-- `cron.rs` - Cron subcommands
+- `config.rs` - Config subcommands (show, validate, init)
+- `cron.rs` - Cron subcommands (list, add, remove, run, runs)
+- `memory.rs` - Memory subcommands (list, search, stats, get, delete, compact)
 
 ---
 
@@ -118,6 +129,7 @@ pub struct ServerConfig { ... }
 pub struct ChannelsConfig { ... }
 pub struct ProvidersConfig { ... }
 pub struct CronConfig { ... }
+pub struct MemoryConfig { ... }
 ```
 
 ---
@@ -152,21 +164,71 @@ pub use store::{CronStore, CronEntry};
 **Public entrypoint:** `bxnode_bot::gateway`
 
 **Responsibilities:**
-- HTTP endpoints (health, chat completions, models)
+- HTTP endpoints (health, chat completions, models, stats)
 - WebSocket RPC (method handlers)
 - Static file serving (embedded UI)
 - Shared application state
+- Channel event routing to agents
+
+**HTTP Endpoints:**
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Simple health check (for load balancers) |
+| `/health/detailed` | GET | Detailed status of all subsystems |
+| `/stats` | GET | Metrics and counts |
+| `/v1/chat/completions` | POST | OpenAI-compatible chat API |
+| `/v1/models` | GET | List available models |
+| `/ws` | GET | WebSocket RPC endpoint |
+| `/*` | GET | Static UI assets (fallback) |
 
 **Public API:**
 ```rust
 pub async fn serve(args: ServeArgs) -> Result<()>;
-pub struct AppState { ... }
+pub struct AppState {
+    pub providers: Arc<ProviderRegistry>,
+    pub channels: Arc<ChannelRegistry>,
+    pub cron: Arc<CronScheduler>,
+    pub memory: Arc<RwLock<MemoryStore>>,
+}
 ```
 
 **Internal modules:**
 - `http.rs` - HTTP handlers
 - `ws.rs` - WebSocket handlers
 - `protocol.rs` - RPC frame types
+- `methods.rs` - WebSocket RPC method implementations
+
+---
+
+## memory
+
+**Owner:** Long-term memory storage and search
+
+**Public entrypoint:** `bxnode_bot::memory`
+
+**Responsibilities:**
+- JSONL append-only storage with soft deletes
+- In-memory inverted index for keyword search
+- Memory scoping (agent, channel, user, session)
+- Memory tools for agent use
+
+**Public API:**
+```rust
+pub use store::{MemoryStore, MemoryStoreStats};
+pub use search::MemorySearchResult;
+pub struct MemoryRecord { ... }
+pub struct MemoryScope { ... }
+pub struct MemoryRecordBuilder { ... }
+```
+
+**Internal modules:**
+- `store.rs` - JSONL persistence and state management
+- `search.rs` - Tokenization, indexing, scoring
+
+**Memory Tools (exposed to agents):**
+- `memory_store` - Store content with metadata
+- `memory_recall` - Search memories by query
+- `memory_forget` - Soft-delete by ID
 
 ---
 
@@ -177,15 +239,43 @@ pub struct AppState { ... }
 **Public entrypoint:** `bxnode_bot::plugins`
 
 **Responsibilities:**
-- Plugin trait definition
-- Plugin registry
-- Dynamic loading (future)
+- Plugin trait for extensibility
+- Plugin registry for lifecycle management
+- Hook system for event interception
+- Built-in plugin discovery
 
 **Public API:**
 ```rust
-pub trait Plugin: Send + Sync { ... }
-pub struct PluginRegistry { ... }
+pub use registry::PluginRegistry;
+pub trait Plugin: Send + Sync {
+    fn id(&self) -> &str;
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    fn version(&self) -> &str;
+    fn on_load(&self, ctx: &mut PluginContext) -> Result<()>;
+    fn on_unload(&self) -> Result<()>;
+}
+pub struct PluginContext { ... }
+pub struct PluginRecord { ... }
+pub enum PluginStatus { Loaded, Disabled, Error }
+pub enum HookEvent { BeforeSend, AfterReceive, BeforeCompletion, ... }
+pub type HookHandler = Arc<dyn Fn(&HookData) -> Result<HookAction>>;
 ```
+
+**Internal modules:**
+- `registry.rs` - Plugin registry and lifecycle management
+- `builtin/mod.rs` - Built-in plugins
+- `builtin/hello.rs` - Example hello plugin
+
+**Hook Events:**
+- `BeforeSend` - Before sending message to channel
+- `AfterReceive` - After receiving message from channel
+- `BeforeCompletion` - Before calling LLM provider
+- `AfterCompletion` - After LLM response received
+- `BeforeToolExecute` - Before tool execution
+- `AfterToolExecute` - After tool execution
+- `OnServerStart` - When server starts
+- `OnServerStop` - When server stops
 
 ---
 
@@ -251,14 +341,17 @@ pub struct TranscriptEntry { ... }
    ```
 
 2. **Cross-module dependencies should be minimal:**
-   - `gateway` depends on `providers`, `channels`, `config`
-   - `cli` depends on `gateway`, `config`, `cron`
-   - `agent` depends on `providers`, `tools`
+   - `gateway` depends on `providers`, `channels`, `config`, `memory`
+   - `cli` depends on `gateway`, `config`, `cron`, `memory`
+   - `agent` depends on `providers`, `tools`, `memory`
 
 3. **Feature-gated modules:**
    - `channels::telegram` requires `channel-telegram` feature
    - `channels::discord` requires `channel-discord` feature
    - `channels::slack` requires `channel-slack` feature
+   - `channels::line` requires `channel-line` feature
+   - `channels::signal` requires `channel-signal` feature
+   - `channels::feishu` requires `channel-feishu` feature
 
 ---
 

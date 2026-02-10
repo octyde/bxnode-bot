@@ -209,6 +209,22 @@ pub trait Channel: Send + Sync {
     /// Check if the channel is connected
     fn is_connected(&self) -> bool;
 
+    /// Check if the channel supports message editing (for streaming updates)
+    fn supports_edit(&self) -> bool {
+        false
+    }
+
+    /// Edit an existing message (for streaming updates)
+    /// Returns Ok(()) if successful, Err if not supported or failed
+    async fn edit_message(
+        &self,
+        _chat_id: &str,
+        _message_id: &str,
+        _new_content: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("Message editing not supported by this channel")
+    }
+
     /// Get channel status
     fn status(&self) -> ChannelStatus {
         ChannelStatus {
@@ -239,6 +255,15 @@ pub mod discord;
 #[cfg(feature = "channel-slack")]
 pub mod slack;
 
+#[cfg(feature = "channel-line")]
+pub mod line;
+
+#[cfg(feature = "channel-signal")]
+pub mod signal;
+
+#[cfg(feature = "channel-feishu")]
+pub mod feishu;
+
 // Stub implementations for when features are disabled
 #[cfg(not(feature = "channel-telegram"))]
 pub mod telegram {
@@ -253,4 +278,19 @@ pub mod discord {
 #[cfg(not(feature = "channel-slack"))]
 pub mod slack {
     //! Slack channel stub (feature not enabled)
+}
+
+#[cfg(not(feature = "channel-line"))]
+pub mod line {
+    //! LINE channel stub (feature not enabled)
+}
+
+#[cfg(not(feature = "channel-signal"))]
+pub mod signal {
+    //! Signal channel stub (feature not enabled)
+}
+
+#[cfg(not(feature = "channel-feishu"))]
+pub mod feishu {
+    //! Feishu channel stub (feature not enabled)
 }

@@ -3,194 +3,1512 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>BXNode Bot - Control Panel</title>
+  <title>BXNode Bot - Skills Manager</title>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
+    :root {
+      --bg-primary: #020617;
+      --bg-secondary: #0F172A;
+      --bg-tertiary: #1E293B;
+      --bg-elevated: #334155;
+      --accent: #22C55E;
+      --accent-hover: #16A34A;
+      --accent-muted: rgba(34, 197, 94, 0.15);
+      --text-primary: #F8FAFC;
+      --text-secondary: #94A3B8;
+      --text-muted: #64748B;
+      --border: #334155;
+      --border-hover: #475569;
+      --error: #EF4444;
+      --warning: #F59E0B;
+      --radius: 8px;
+      --radius-lg: 12px;
+      --radius-xl: 16px;
+      --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -2px rgba(0, 0, 0, 0.2);
+      --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -4px rgba(0, 0, 0, 0.2);
+      --shadow-glow: 0 0 20px rgba(34, 197, 94, 0.15);
+      --transition: 200ms ease;
+    }
+
     * {
       margin: 0;
       padding: 0;
       box-sizing: border-box;
     }
+
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      font-family: 'Fira Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
       min-height: 100vh;
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+
+    code, .mono {
+      font-family: 'Fira Code', monospace;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: var(--bg-secondary);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--bg-elevated);
+      border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--border-hover);
+    }
+
+    /* Layout */
+    .app {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    /* Title Bar (for native window feel) */
+    .titlebar {
+      height: 32px;
+      background: var(--bg-secondary);
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      -webkit-app-region: drag;
+      user-select: none;
+    }
+
+    .titlebar-title {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-secondary);
+    }
+
+    /* Navbar */
+    .navbar {
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      padding: 0 1.5rem;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .navbar-brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .navbar-logo {
+      width: 28px;
+      height: 28px;
+      background: linear-gradient(135deg, var(--accent), #10B981);
+      border-radius: 6px;
       display: flex;
       align-items: center;
       justify-content: center;
-      color: #fff;
+      box-shadow: var(--shadow-glow);
     }
-    .container {
-      text-align: center;
-      padding: 2rem;
-      max-width: 600px;
+
+    .navbar-logo svg {
+      width: 16px;
+      height: 16px;
+      stroke: var(--bg-primary);
     }
-    h1 {
-      font-size: 2.5rem;
-      margin-bottom: 1rem;
-      background: linear-gradient(90deg, #00d4ff, #7b2fff);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
+
+    .navbar-title {
+      font-weight: 600;
+      font-size: 1rem;
+      letter-spacing: -0.025em;
     }
-    .status {
-      display: inline-block;
-      padding: 0.5rem 1rem;
-      background: rgba(0, 212, 255, 0.1);
-      border: 1px solid rgba(0, 212, 255, 0.3);
-      border-radius: 20px;
-      margin-bottom: 2rem;
+
+    .navbar-nav {
+      display: flex;
+      gap: 4px;
     }
-    .status.running::before {
-      content: '';
-      display: inline-block;
-      width: 8px;
-      height: 8px;
-      background: #00ff88;
+
+    .nav-link {
+      padding: 8px 14px;
+      border-radius: var(--radius);
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-weight: 500;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all var(--transition);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .nav-link:hover {
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+    }
+
+    .nav-link.active {
+      background: var(--accent);
+      color: var(--bg-primary);
+    }
+
+    .nav-link svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    .navbar-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      background: var(--accent-muted);
+      border-radius: 9999px;
+      font-size: 12px;
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
       border-radius: 50%;
-      margin-right: 8px;
+      background: var(--accent);
       animation: pulse 2s infinite;
     }
-    .status.stopped::before {
-      content: '';
-      display: inline-block;
-      width: 8px;
-      height: 8px;
-      background: #ff4444;
-      border-radius: 50%;
-      margin-right: 8px;
-    }
+
     @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.6; transform: scale(0.95); }
     }
-    .info {
-      color: #888;
-      font-size: 0.9rem;
-      line-height: 1.8;
+
+    /* Main Content */
+    .main {
+      flex: 1;
+      padding: 1.5rem;
+      max-width: 1400px;
+      width: 100%;
+      margin: 0 auto;
     }
-    .controls {
-      margin-top: 2rem;
-      display: flex;
+
+    /* Stats Cards */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
       gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .stat-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      transition: all var(--transition);
+    }
+
+    .stat-card:hover {
+      border-color: var(--border-hover);
+      transform: translateY(-1px);
+    }
+
+    .stat-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: var(--radius);
+      background: var(--accent-muted);
+      display: flex;
+      align-items: center;
       justify-content: center;
     }
-    button {
-      padding: 0.75rem 1.5rem;
-      border: none;
-      border-radius: 8px;
-      font-size: 1rem;
+
+    .stat-icon svg {
+      width: 22px;
+      height: 22px;
+      stroke: var(--accent);
+    }
+
+    .stat-info h3 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      line-height: 1.2;
+      font-family: 'Fira Code', monospace;
+    }
+
+    .stat-info p {
+      color: var(--text-muted);
+      font-size: 0.8125rem;
+    }
+
+    /* Toolbar */
+    .toolbar {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 1.5rem;
+      align-items: center;
+    }
+
+    .search-box {
+      flex: 1;
+      position: relative;
+    }
+
+    .search-box input {
+      width: 100%;
+      padding: 10px 14px 10px 40px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text-primary);
+      font-size: 0.875rem;
+      font-family: inherit;
+      transition: all var(--transition);
+    }
+
+    .search-box input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-muted);
+    }
+
+    .search-box input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .search-box svg {
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 16px;
+      height: 16px;
+      stroke: var(--text-muted);
+    }
+
+    /* Buttons */
+    .btn {
+      padding: 10px 16px;
+      border-radius: var(--radius);
+      font-weight: 500;
+      font-size: 0.8125rem;
+      font-family: inherit;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: all var(--transition);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: none;
+      white-space: nowrap;
     }
-    button.primary {
-      background: linear-gradient(90deg, #00d4ff, #7b2fff);
-      color: #fff;
+
+    .btn svg {
+      width: 16px;
+      height: 16px;
     }
-    button.primary:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 4px 20px rgba(0, 212, 255, 0.4);
+
+    .btn-primary {
+      background: var(--accent);
+      color: var(--bg-primary);
     }
-    button.secondary {
-      background: rgba(255, 255, 255, 0.1);
-      color: #fff;
-      border: 1px solid rgba(255, 255, 255, 0.2);
+
+    .btn-primary:hover {
+      background: var(--accent-hover);
+      box-shadow: var(--shadow-glow);
     }
-    button.secondary:hover {
-      background: rgba(255, 255, 255, 0.2);
+
+    .btn-secondary {
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
     }
-    button:disabled {
+
+    .btn-secondary:hover {
+      background: var(--bg-elevated);
+      border-color: var(--border-hover);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-secondary);
+      padding: 8px;
+    }
+
+    .btn-ghost:hover {
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+    }
+
+    .btn:disabled {
       opacity: 0.5;
       cursor: not-allowed;
+      transform: none;
     }
-    .endpoints {
-      margin-top: 2rem;
-      text-align: left;
-      background: rgba(255, 255, 255, 0.05);
+
+    /* Skills Grid */
+    .skills-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+      gap: 1rem;
+    }
+
+    .skill-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 1.25rem;
+      cursor: pointer;
+      transition: all var(--transition);
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .skill-card:hover {
+      border-color: var(--accent);
+      box-shadow: var(--shadow-glow);
+    }
+
+    .skill-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+
+    .skill-name {
+      font-weight: 600;
+      font-size: 0.9375rem;
+      color: var(--text-primary);
+      font-family: 'Fira Code', monospace;
+    }
+
+    .skill-badge {
+      padding: 3px 8px;
+      border-radius: 9999px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .skill-badge.active {
+      background: var(--accent-muted);
+      color: var(--accent);
+    }
+
+    .skill-badge.inactive {
+      background: rgba(148, 163, 184, 0.15);
+      color: var(--text-muted);
+    }
+
+    .skill-description {
+      color: var(--text-secondary);
+      font-size: 0.8125rem;
+      line-height: 1.5;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .skill-meta {
+      display: flex;
+      gap: 1rem;
+      margin-top: auto;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+      align-items: center;
+    }
+
+    .skill-meta-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .skill-meta-item svg {
+      width: 12px;
+      height: 12px;
+    }
+
+    .skill-actions {
+      margin-left: auto;
+    }
+
+    /* Toggle Switch */
+    .toggle {
+      position: relative;
+      width: 40px;
+      height: 22px;
+      cursor: pointer;
+    }
+
+    .toggle input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .toggle-slider {
+      position: absolute;
+      inset: 0;
+      background: var(--bg-elevated);
+      border-radius: 9999px;
+      transition: all var(--transition);
+    }
+
+    .toggle-slider::before {
+      content: '';
+      position: absolute;
+      width: 16px;
+      height: 16px;
+      left: 3px;
+      bottom: 3px;
+      background: var(--text-primary);
+      border-radius: 50%;
+      transition: all var(--transition);
+    }
+
+    .toggle input:checked + .toggle-slider {
+      background: var(--accent);
+    }
+
+    .toggle input:checked + .toggle-slider::before {
+      transform: translateX(18px);
+    }
+
+    .toggle input:focus + .toggle-slider {
+      box-shadow: 0 0 0 3px var(--accent-muted);
+    }
+
+    /* Modal */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.8);
+      backdrop-filter: blur(4px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+      z-index: 200;
+      opacity: 0;
+      visibility: hidden;
+      transition: all var(--transition);
+    }
+
+    .modal-overlay.active {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    .modal {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      max-width: 640px;
+      width: 100%;
+      max-height: 85vh;
+      overflow-y: auto;
+      transform: scale(0.95) translateY(10px);
+      transition: all var(--transition);
+    }
+
+    .modal-overlay.active .modal {
+      transform: scale(1) translateY(0);
+    }
+
+    .modal-header {
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      background: var(--bg-secondary);
+      z-index: 10;
+    }
+
+    .modal-title {
+      font-weight: 600;
+      font-size: 1.125rem;
+      font-family: 'Fira Code', monospace;
+    }
+
+    .modal-body {
       padding: 1.5rem;
-      border-radius: 10px;
-      font-family: monospace;
-      font-size: 0.85rem;
     }
-    .endpoints code {
-      color: #00d4ff;
+
+    .modal-section {
+      margin-bottom: 1.5rem;
     }
-    #version {
-      margin-top: 1rem;
-      font-size: 0.8rem;
-      color: #666;
+
+    .modal-section:last-child {
+      margin-bottom: 0;
+    }
+
+    .modal-section h4 {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .modal-section p {
+      color: var(--text-secondary);
+      font-size: 0.875rem;
+    }
+
+    .modal-section pre {
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1rem;
+      font-size: 0.8125rem;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      color: var(--text-secondary);
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    .modal-footer {
+      padding: 1rem 1.5rem;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.75rem;
+      position: sticky;
+      bottom: 0;
+      background: var(--bg-secondary);
+    }
+
+    /* Toast Notifications */
+    .toast-container {
+      position: fixed;
+      bottom: 1.5rem;
+      right: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      z-index: 300;
+    }
+
+    .toast {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 280px;
+      box-shadow: var(--shadow-lg);
+      animation: slideIn 0.3s ease;
+    }
+
+    @keyframes slideIn {
+      from {
+        transform: translateX(100%);
+        opacity: 0;
+      }
+      to {
+        transform: translateX(0);
+        opacity: 1;
+      }
+    }
+
+    .toast.success { border-left: 3px solid var(--accent); }
+    .toast.error { border-left: 3px solid var(--error); }
+    .toast.warning { border-left: 3px solid var(--warning); }
+
+    .toast-icon svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .toast.success .toast-icon { color: var(--accent); }
+    .toast.error .toast-icon { color: var(--error); }
+    .toast.warning .toast-icon { color: var(--warning); }
+
+    .toast-message {
+      flex: 1;
+      font-size: 0.8125rem;
+    }
+
+    /* Empty State */
+    .empty-state {
+      text-align: center;
+      padding: 4rem 2rem;
+      color: var(--text-muted);
+    }
+
+    .empty-state svg {
+      width: 56px;
+      height: 56px;
+      margin-bottom: 1rem;
+      opacity: 0.4;
+      stroke: var(--text-muted);
+    }
+
+    .empty-state h3 {
+      font-size: 1rem;
+      margin-bottom: 0.5rem;
+      color: var(--text-secondary);
+    }
+
+    .empty-state p {
+      font-size: 0.875rem;
+    }
+
+    /* Loading Spinner */
+    .spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid var(--bg-tertiary);
+      border-top-color: currentColor;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Reduced Motion */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+
+    /* Responsive */
+    @media (max-width: 1024px) {
+      .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+
+    @media (max-width: 768px) {
+      .navbar {
+        padding: 0 1rem;
+      }
+
+      .navbar-nav {
+        display: none;
+      }
+
+      .main {
+        padding: 1rem;
+      }
+
+      .stats-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .skills-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .toolbar {
+        flex-direction: column;
+        align-items: stretch;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .stats-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* View Sections */
+    .view {
+      display: none;
+    }
+
+    .view.active {
+      display: block;
+    }
+
+    /* Settings View */
+    .settings-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 1.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .settings-card h3 {
+      font-size: 0.9375rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+      color: var(--text-primary);
+    }
+
+    .settings-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.75rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .settings-item:last-child {
+      border-bottom: none;
+      padding-bottom: 0;
+    }
+
+    .settings-item:first-of-type {
+      padding-top: 0;
+    }
+
+    .settings-label {
+      font-size: 0.8125rem;
+      color: var(--text-secondary);
+    }
+
+    .settings-value {
+      color: var(--text-primary);
+      font-size: 0.8125rem;
+      font-family: 'Fira Code', monospace;
+    }
+
+    .directory-list {
+      list-style: none;
+    }
+
+    .directory-list li {
+      padding: 10px 12px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      margin-bottom: 8px;
+      font-size: 0.8125rem;
+      font-family: 'Fira Code', monospace;
+      color: var(--text-secondary);
+    }
+
+    .directory-list li:last-child {
+      margin-bottom: 0;
+    }
+
+    /* Initialization Screen */
+    .init-screen {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 60vh;
+      text-align: center;
+      gap: 1.5rem;
+    }
+
+    .init-screen .logo {
+      width: 64px;
+      height: 64px;
+      background: linear-gradient(135deg, var(--accent), #10B981);
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: var(--shadow-glow);
+    }
+
+    .init-screen .logo svg {
+      width: 32px;
+      height: 32px;
+      stroke: var(--bg-primary);
+    }
+
+    .init-screen h2 {
+      font-size: 1.25rem;
+      font-weight: 600;
+    }
+
+    .init-screen p {
+      color: var(--text-secondary);
+      font-size: 0.875rem;
+      max-width: 400px;
     }
   </style>
 </head>
 <body>
-  <div class="container">
-    <h1>BXNode Bot</h1>
-    <div id="status" class="status running">Server Running</div>
-    <p class="info">
-      AI Agent Gateway with Multi-Platform Messaging Support
-    </p>
-    <div class="controls">
-      <button id="startBtn" class="primary" disabled>Start Server</button>
-      <button id="stopBtn" class="secondary">Stop Server</button>
+  <div class="app" id="app">
+    <!-- Navbar -->
+    <nav class="navbar">
+      <div class="navbar-brand">
+        <div class="navbar-logo">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+            <path d="M2 17l10 5 10-5"/>
+            <path d="M2 12l10 5 10-5"/>
+          </svg>
+        </div>
+        <span class="navbar-title">BXNode Bot</span>
+      </div>
+
+      <div class="navbar-nav">
+        <a class="nav-link active" data-view="dashboard">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="7" height="7"/>
+            <rect x="14" y="3" width="7" height="7"/>
+            <rect x="14" y="14" width="7" height="7"/>
+            <rect x="3" y="14" width="7" height="7"/>
+          </svg>
+          Dashboard
+        </a>
+        <a class="nav-link" data-view="skills">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+          </svg>
+          Skills
+        </a>
+        <a class="nav-link" data-view="settings">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M12 1v4m0 14v4M4.22 4.22l2.83 2.83m9.9 9.9l2.83 2.83M1 12h4m14 0h4M4.22 19.78l2.83-2.83m9.9-9.9l2.83-2.83"/>
+          </svg>
+          Settings
+        </a>
+      </div>
+
+      <div class="navbar-status">
+        <span class="status-dot"></span>
+        <span id="server-status">Ready</span>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main">
+      <!-- Dashboard View -->
+      <div class="view active" id="view-dashboard">
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-icon">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+              </svg>
+            </div>
+            <div class="stat-info">
+              <h3 id="stat-total">0</h3>
+              <p>Total Skills</p>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            </div>
+            <div class="stat-info">
+              <h3 id="stat-active">0</h3>
+              <p>Active</p>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M12 6v6l4 2"/>
+              </svg>
+            </div>
+            <div class="stat-info">
+              <h3 id="stat-version">-</h3>
+              <p>Version</p>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+              </svg>
+            </div>
+            <div class="stat-info">
+              <h3 id="stat-providers">0</h3>
+              <p>Providers</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="toolbar">
+          <div class="search-box">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="8"/>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input type="text" id="search-input" placeholder="Search skills...">
+          </div>
+          <button class="btn btn-secondary" id="refresh-btn">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 2v6h-6"/>
+              <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+              <path d="M3 22v-6h6"/>
+              <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+            </svg>
+            Refresh
+          </button>
+          <button class="btn btn-primary" id="sync-btn">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Sync Skills
+          </button>
+        </div>
+
+        <div class="skills-grid" id="skills-grid">
+          <div class="empty-state">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+            </svg>
+            <h3>Initializing...</h3>
+            <p>Loading skills from local directories</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Skills View -->
+      <div class="view" id="view-skills">
+        <div class="toolbar">
+          <div class="search-box">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="8"/>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input type="text" id="search-input-skills" placeholder="Search skills...">
+          </div>
+        </div>
+        <div class="skills-grid" id="skills-grid-full"></div>
+      </div>
+
+      <!-- Settings View -->
+      <div class="view" id="view-settings">
+        <div class="settings-card">
+          <h3>Skills Configuration</h3>
+          <div class="settings-item">
+            <span class="settings-label">Skills System</span>
+            <span class="settings-value" id="settings-enabled">-</span>
+          </div>
+          <div class="settings-item">
+            <span class="settings-label">Total Skills</span>
+            <span class="settings-value" id="settings-total">-</span>
+          </div>
+          <div class="settings-item">
+            <span class="settings-label">Active Skills</span>
+            <span class="settings-value" id="settings-active">-</span>
+          </div>
+        </div>
+
+        <div class="settings-card">
+          <h3>Skill Directories</h3>
+          <ul class="directory-list" id="settings-directories">
+            <li>Loading...</li>
+          </ul>
+        </div>
+
+        <div class="settings-card">
+          <h3>Tauri Commands</h3>
+          <div class="settings-item">
+            <span class="settings-label">List Skills</span>
+            <span class="settings-value">list_skills</span>
+          </div>
+          <div class="settings-item">
+            <span class="settings-label">Get Skill</span>
+            <span class="settings-value">get_skill</span>
+          </div>
+          <div class="settings-item">
+            <span class="settings-label">Enable Skill</span>
+            <span class="settings-value">enable_skill</span>
+          </div>
+          <div class="settings-item">
+            <span class="settings-label">Disable Skill</span>
+            <span class="settings-value">disable_skill</span>
+          </div>
+          <div class="settings-item">
+            <span class="settings-label">Sync Skills</span>
+            <span class="settings-value">sync_skills</span>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Skill Detail Modal -->
+    <div class="modal-overlay" id="skill-modal">
+      <div class="modal">
+        <div class="modal-header">
+          <h3 class="modal-title" id="modal-skill-name">-</h3>
+          <button class="btn btn-ghost" id="modal-close">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="modal-section">
+            <h4>Description</h4>
+            <p id="modal-description">-</p>
+          </div>
+          <div class="modal-section">
+            <h4>Status</h4>
+            <p><span class="skill-badge" id="modal-status">-</span></p>
+          </div>
+          <div class="modal-section" id="modal-license-section">
+            <h4>License</h4>
+            <p id="modal-license">-</p>
+          </div>
+          <div class="modal-section" id="modal-instructions-section">
+            <h4>Instructions</h4>
+            <pre id="modal-instructions">-</pre>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="modal-toggle-btn">Enable</button>
+          <button class="btn btn-primary" id="modal-done-btn">Done</button>
+        </div>
+      </div>
     </div>
-    <div class="endpoints">
-      <strong>API Endpoints:</strong><br><br>
-      <code>GET  /health</code> - Health check<br>
-      <code>GET  /v1/models</code> - List models<br>
-      <code>POST /v1/chat/completions</code> - Chat API<br>
-      <code>WS   /ws</code> - WebSocket RPC
-    </div>
-    <div id="version">Version: 0.1.0</div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toast-container"></div>
   </div>
 
   <script>
-    // Check if running in Tauri
+    // Detect if running in Tauri
     const isTauri = window.__TAURI__ !== undefined;
 
-    async function updateStatus() {
+    // Tauri invoke wrapper
+    async function invoke(cmd, args = {}) {
       if (isTauri) {
-        try {
-          const result = await window.__TAURI__.core.invoke('get_status');
-          const status = JSON.parse(result);
-          document.getElementById('version').textContent = `Version: ${status.version}`;
-        } catch (e) {
-          console.error('Failed to get status:', e);
+        return await window.__TAURI__.core.invoke(cmd, args);
+      }
+      // Fallback to HTTP API for browser testing
+      return await fetchAPI(cmd, args);
+    }
+
+    // HTTP API fallback for browser testing
+    async function fetchAPI(cmd, args) {
+      const endpoints = {
+        'get_stats': { method: 'GET', url: '/stats' },
+        'init_skills': { method: 'GET', url: '/api/skills/config' },
+        'list_skills': { method: 'GET', url: '/api/skills' },
+        'get_skill': { method: 'GET', url: `/api/skills/${args.name}` },
+        'enable_skill': { method: 'POST', url: `/api/skills/${args.name}/enable` },
+        'disable_skill': { method: 'POST', url: `/api/skills/${args.name}/disable` },
+        'sync_skills': { method: 'POST', url: '/api/skills/sync' },
+        'get_skills_config': { method: 'GET', url: '/api/skills/config' },
+        'refresh_skills': { method: 'GET', url: '/api/skills' },
+      };
+
+      const endpoint = endpoints[cmd];
+      if (!endpoint) throw new Error(`Unknown command: ${cmd}`);
+
+      const response = await fetch(endpoint.url, { method: endpoint.method });
+      if (!response.ok) throw new Error(`API error: ${response.status}`);
+      return await response.json();
+    }
+
+    // App State
+    const state = {
+      skills: [],
+      config: null,
+      stats: null,
+      currentSkill: null,
+      initialized: false,
+    };
+
+    // DOM Elements
+    const elements = {
+      statsTotal: document.getElementById('stat-total'),
+      statsActive: document.getElementById('stat-active'),
+      statsVersion: document.getElementById('stat-version'),
+      statsProviders: document.getElementById('stat-providers'),
+      searchInput: document.getElementById('search-input'),
+      searchInputSkills: document.getElementById('search-input-skills'),
+      skillsGrid: document.getElementById('skills-grid'),
+      skillsGridFull: document.getElementById('skills-grid-full'),
+      syncBtn: document.getElementById('sync-btn'),
+      refreshBtn: document.getElementById('refresh-btn'),
+      modal: document.getElementById('skill-modal'),
+      modalSkillName: document.getElementById('modal-skill-name'),
+      modalDescription: document.getElementById('modal-description'),
+      modalStatus: document.getElementById('modal-status'),
+      modalLicense: document.getElementById('modal-license'),
+      modalLicenseSection: document.getElementById('modal-license-section'),
+      modalInstructions: document.getElementById('modal-instructions'),
+      modalInstructionsSection: document.getElementById('modal-instructions-section'),
+      modalToggleBtn: document.getElementById('modal-toggle-btn'),
+      modalClose: document.getElementById('modal-close'),
+      modalDone: document.getElementById('modal-done-btn'),
+      toastContainer: document.getElementById('toast-container'),
+      settingsEnabled: document.getElementById('settings-enabled'),
+      settingsTotal: document.getElementById('settings-total'),
+      settingsActive: document.getElementById('settings-active'),
+      settingsDirectories: document.getElementById('settings-directories'),
+      serverStatus: document.getElementById('server-status'),
+    };
+
+    // Toast Notifications
+    function showToast(message, type = 'success') {
+      const toast = document.createElement('div');
+      toast.className = `toast ${type}`;
+
+      const iconPaths = {
+        success: '<polyline points="20 6 9 17 4 12"/>',
+        error: '<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>',
+        warning: '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>'
+      };
+
+      toast.innerHTML = `
+        <span class="toast-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            ${iconPaths[type] || iconPaths.success}
+          </svg>
+        </span>
+        <span class="toast-message">${message}</span>
+      `;
+
+      elements.toastContainer.appendChild(toast);
+
+      setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateX(100%)';
+        setTimeout(() => toast.remove(), 300);
+      }, 3000);
+    }
+
+    // Render Functions
+    function renderSkillCard(skill) {
+      const card = document.createElement('div');
+      card.className = 'skill-card';
+      card.dataset.name = skill.name;
+
+      card.innerHTML = `
+        <div class="skill-header">
+          <span class="skill-name">${skill.name}</span>
+          <span class="skill-badge ${skill.is_active ? 'active' : 'inactive'}">
+            ${skill.is_active ? 'Active' : 'Inactive'}
+          </span>
+        </div>
+        <p class="skill-description">${skill.description}</p>
+        <div class="skill-meta">
+          ${skill.license ? `
+            <span class="skill-meta-item">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+                <polyline points="14 2 14 8 20 8"/>
+              </svg>
+              ${skill.license}
+            </span>
+          ` : ''}
+          <span class="skill-meta-item">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+            </svg>
+            ${skill.reference_count || 0} refs
+          </span>
+          <span class="skill-meta-item">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="16 18 22 12 16 6"/>
+              <polyline points="8 6 2 12 8 18"/>
+            </svg>
+            ${skill.script_count || 0} scripts
+          </span>
+          <div class="skill-actions">
+            <label class="toggle" onclick="event.stopPropagation()">
+              <input type="checkbox" ${skill.is_active ? 'checked' : ''} data-skill="${skill.name}">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+      `;
+
+      card.addEventListener('click', () => openSkillModal(skill.name));
+
+      const toggle = card.querySelector('input[type="checkbox"]');
+      toggle.addEventListener('change', async (e) => {
+        e.stopPropagation();
+        await toggleSkill(skill.name, e.target.checked);
+      });
+
+      return card;
+    }
+
+    function renderSkillsGrid(skills, container) {
+      container.innerHTML = '';
+
+      if (skills.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+            </svg>
+            <h3>No skills found</h3>
+            <p>Click "Sync Skills" to download from awesome-openclaw-skills</p>
+          </div>
+        `;
+        return;
+      }
+
+      skills.forEach(skill => {
+        container.appendChild(renderSkillCard(skill));
+      });
+    }
+
+    function renderStats() {
+      if (state.config) {
+        elements.statsTotal.textContent = state.config.total_skills || 0;
+        elements.statsActive.textContent = state.config.active_skills || 0;
+        elements.settingsEnabled.textContent = state.config.enabled ? 'Enabled' : 'Disabled';
+        elements.settingsTotal.textContent = state.config.total_skills || 0;
+        elements.settingsActive.textContent = state.config.active_skills || 0;
+
+        if (state.config.directories && state.config.directories.length > 0) {
+          elements.settingsDirectories.innerHTML = state.config.directories
+            .map(dir => `<li>${dir}</li>`)
+            .join('');
+        } else {
+          elements.settingsDirectories.innerHTML = '<li>No directories configured</li>';
         }
+      }
+
+      if (state.stats) {
+        elements.statsVersion.textContent = state.stats.version || '-';
+        elements.statsProviders.textContent = state.stats.providers || 0;
       }
     }
 
-    async function startServer() {
-      if (isTauri) {
-        try {
-          await window.__TAURI__.core.invoke('start_server', { port: 3000 });
-          document.getElementById('status').className = 'status running';
-          document.getElementById('status').textContent = 'Server Running';
-          document.getElementById('startBtn').disabled = true;
-          document.getElementById('stopBtn').disabled = false;
-        } catch (e) {
-          console.error('Failed to start server:', e);
+    // Modal Functions
+    async function openSkillModal(name) {
+      try {
+        state.currentSkill = await invoke('get_skill', { name });
+      } catch (error) {
+        showToast('Failed to load skill details', 'error');
+        return;
+      }
+
+      const skill = state.currentSkill;
+      elements.modalSkillName.textContent = skill.name;
+      elements.modalDescription.textContent = skill.description;
+      elements.modalStatus.textContent = skill.is_active ? 'Active' : 'Inactive';
+      elements.modalStatus.className = `skill-badge ${skill.is_active ? 'active' : 'inactive'}`;
+
+      if (skill.license) {
+        elements.modalLicense.textContent = skill.license;
+        elements.modalLicenseSection.style.display = 'block';
+      } else {
+        elements.modalLicenseSection.style.display = 'none';
+      }
+
+      if (skill.instructions) {
+        elements.modalInstructions.textContent = skill.instructions;
+        elements.modalInstructionsSection.style.display = 'block';
+      } else {
+        elements.modalInstructionsSection.style.display = 'none';
+      }
+
+      elements.modalToggleBtn.textContent = skill.is_active ? 'Disable' : 'Enable';
+      elements.modal.classList.add('active');
+    }
+
+    function closeModal() {
+      elements.modal.classList.remove('active');
+      state.currentSkill = null;
+    }
+
+    // Skill Actions
+    async function toggleSkill(name, enable) {
+      try {
+        if (enable) {
+          await invoke('enable_skill', { name });
+          showToast(`Skill "${name}" enabled`, 'success');
+        } else {
+          await invoke('disable_skill', { name });
+          showToast(`Skill "${name}" disabled`, 'success');
         }
+        await refreshData();
+      } catch (error) {
+        showToast(`Failed to ${enable ? 'enable' : 'disable'} skill: ${error}`, 'error');
+        await refreshData();
       }
     }
 
-    async function stopServer() {
-      if (isTauri) {
-        try {
-          await window.__TAURI__.core.invoke('stop_server');
-          document.getElementById('status').className = 'status stopped';
-          document.getElementById('status').textContent = 'Server Stopped';
-          document.getElementById('startBtn').disabled = false;
-          document.getElementById('stopBtn').disabled = true;
-        } catch (e) {
-          console.error('Failed to stop server:', e);
+    async function handleSync() {
+      elements.syncBtn.disabled = true;
+      elements.syncBtn.innerHTML = '<span class="spinner"></span> Syncing...';
+
+      try {
+        const result = await invoke('sync_skills');
+        if (result.success) {
+          showToast(`Synced ${result.synced.length} skills`, 'success');
+        } else {
+          showToast(`Sync completed with ${result.errors.length} errors`, 'warning');
         }
+        await refreshData();
+      } catch (error) {
+        showToast(`Sync failed: ${error}`, 'error');
+      } finally {
+        elements.syncBtn.disabled = false;
+        elements.syncBtn.innerHTML = `
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          Sync Skills
+        `;
       }
     }
 
-    document.getElementById('startBtn').addEventListener('click', startServer);
-    document.getElementById('stopBtn').addEventListener('click', stopServer);
+    async function handleRefresh() {
+      elements.refreshBtn.disabled = true;
+      try {
+        await invoke('refresh_skills');
+        await refreshData();
+        showToast('Skills refreshed', 'success');
+      } catch (error) {
+        showToast(`Refresh failed: ${error}`, 'error');
+      } finally {
+        elements.refreshBtn.disabled = false;
+      }
+    }
+
+    // Search
+    function filterSkills(query) {
+      const filtered = state.skills.filter(skill =>
+        skill.name.toLowerCase().includes(query.toLowerCase()) ||
+        skill.description.toLowerCase().includes(query.toLowerCase())
+      );
+      renderSkillsGrid(filtered, elements.skillsGrid);
+      renderSkillsGrid(filtered, elements.skillsGridFull);
+    }
+
+    // Navigation
+    function switchView(viewId) {
+      document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+      document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+
+      document.getElementById(`view-${viewId}`).classList.add('active');
+      document.querySelector(`[data-view="${viewId}"]`).classList.add('active');
+    }
+
+    // Data Refresh
+    async function refreshData() {
+      try {
+        state.skills = await invoke('list_skills');
+        state.config = await invoke('get_skills_config');
+        state.stats = await invoke('get_stats');
+
+        renderSkillsGrid(state.skills, elements.skillsGrid);
+        renderSkillsGrid(state.skills, elements.skillsGridFull);
+        renderStats();
+
+        elements.serverStatus.textContent = 'Ready';
+      } catch (error) {
+        console.error('Refresh error:', error);
+        elements.serverStatus.textContent = 'Error';
+      }
+    }
 
     // Initialize
-    updateStatus();
+    async function initialize() {
+      try {
+        // Load config first
+        if (isTauri) {
+          await invoke('load_config', { path: null });
+        }
+
+        // Initialize skills system
+        state.config = await invoke('init_skills');
+
+        if (state.config.enabled) {
+          state.initialized = true;
+          await refreshData();
+          showToast(`Loaded ${state.config.total_skills} skills`, 'success');
+        } else {
+          elements.skillsGrid.innerHTML = `
+            <div class="empty-state">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="8" x2="12" y2="12"/>
+                <line x1="12" y1="16" x2="12.01" y2="16"/>
+              </svg>
+              <h3>Skills system disabled</h3>
+              <p>Enable skills in config.yaml to use this feature</p>
+            </div>
+          `;
+        }
+      } catch (error) {
+        console.error('Initialization error:', error);
+        showToast(`Initialization failed: ${error}`, 'error');
+
+        // Try HTTP API fallback
+        try {
+          await refreshData();
+        } catch (e) {
+          console.error('HTTP fallback also failed:', e);
+        }
+      }
+    }
+
+    // Event Listeners
+    document.querySelectorAll('.nav-link').forEach(link => {
+      link.addEventListener('click', (e) => {
+        e.preventDefault();
+        switchView(link.dataset.view);
+      });
+    });
+
+    elements.searchInput.addEventListener('input', (e) => filterSkills(e.target.value));
+    elements.searchInputSkills.addEventListener('input', (e) => filterSkills(e.target.value));
+    elements.syncBtn.addEventListener('click', handleSync);
+    elements.refreshBtn.addEventListener('click', handleRefresh);
+    elements.modalClose.addEventListener('click', closeModal);
+    elements.modalDone.addEventListener('click', closeModal);
+
+    elements.modalToggleBtn.addEventListener('click', async () => {
+      if (!state.currentSkill) return;
+      await toggleSkill(state.currentSkill.name, !state.currentSkill.is_active);
+      closeModal();
+    });
+
+    elements.modal.addEventListener('click', (e) => {
+      if (e.target === elements.modal) closeModal();
+    });
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeModal();
+    });
+
+    // Start
+    initialize();
   </script>
 </body>
 </html>

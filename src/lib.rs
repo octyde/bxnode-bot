@@ -9,8 +9,11 @@ pub mod cli;
 pub mod config;
 pub mod cron;
 pub mod gateway;
+pub mod memory;
 pub mod plugins;
 pub mod providers;
 pub mod session;
+pub mod skillgen;
+pub mod skills;
 
 pub use config::Config;

@@ -9,7 +9,7 @@ use super::{
     openai::{OpenAIConfig, OpenAIProvider},
     ModelInfo, Provider,
 };
-use crate::config::{self, Config};
+use crate::config::Config;
 
 /// Provider registry for managing multiple LLM providers
 pub struct ProviderRegistry {
@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn test_from_config_with_ollama() {
         let mut config = Config::default();
-        config.providers.ollama = Some(config::OllamaConfig {
+        config.providers.ollama = Some(crate::config::OllamaConfig {
             base_url: "http://localhost:11434".to_string(),
         });
 

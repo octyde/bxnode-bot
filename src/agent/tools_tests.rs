@@ -385,3 +385,308 @@ async fn test_tool_registry_execute_all() {
     assert!(results[0].success);
     assert!(results[1].success);
 }
+
+// ============================================================================
+// Memory Tools Tests
+// ============================================================================
+
+use crate::memory::{MemoryScope, MemoryStore};
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+fn create_test_memory_store() -> Arc<RwLock<MemoryStore>> {
+    Arc::new(RwLock::new(MemoryStore::in_memory()))
+}
+
+fn create_test_scope() -> MemoryScope {
+    MemoryScope::user("test-agent", "test-channel", "test-user")
+}
+
+#[tokio::test]
+async fn test_memory_store_tool_basic() {
+    let store = create_test_memory_store();
+    let scope = create_test_scope();
+    let tool = MemoryStoreTool::new(store.clone(), scope);
+
+    let result = tool
+        .execute(json!({
+            "content": "The user's favorite color is blue"
+        }))
+        .await
+        .unwrap();
+
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(parsed["stored"], true);
+    assert!(parsed["id"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn test_memory_store_tool_with_metadata() {
+    let store = create_test_memory_store();
+    let scope = create_test_scope();
+    let tool = MemoryStoreTool::new(store.clone(), scope);
+
+    let result = tool
+        .execute(json!({
+            "content": "User prefers morning meetings",
+            "summary": "Meeting preference",
+            "tags": ["preferences", "scheduling"],
+            "importance": 8
+        }))
+        .await
+        .unwrap();
+
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(parsed["stored"], true);
+
+    // Verify the stored record
+    let store = store.read().await;
+    assert_eq!(store.len(), 1);
+}
+
+#[tokio::test]
+async fn test_memory_store_tool_missing_content() {
+    let store = create_test_memory_store();
+    let scope = create_test_scope();
+    let tool = MemoryStoreTool::new(store, scope);
+
+    let result = tool.execute(json!({})).await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_memory_recall_tool_basic() {
+    let store = create_test_memory_store();
+    let scope = create_test_scope();
+
+    // First store some memories
+    {
+        let mut store_write = store.write().await;
+        let record = crate::memory::MemoryRecord::builder()
+            .scope(scope.clone())
+            .content("User's favorite programming language is Rust")
+            .summary("Language preference")
+            .tags(vec!["preferences".to_string()])
+            .importance(7)
+            .build()
+            .unwrap();
+        store_write.store(record).unwrap();
+    }
+
+    let tool = MemoryRecallTool::new(store, scope);
+
+    let result = tool
+        .execute(json!({
+            "query": "programming language"
+        }))
+        .await
+        .unwrap();
+
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(parsed["found"], true);
+    assert_eq!(parsed["count"], 1);
+    assert!(parsed["memories"].is_array());
+}
+
+#[tokio::test]
+async fn test_memory_recall_tool_no_results() {
+    let store = create_test_memory_store();
+    let scope = create_test_scope();
+    let tool = MemoryRecallTool::new(store, scope);
+
+    let result = tool
+        .execute(json!({
+            "query": "nonexistent topic"
+        }))
+        .await
+        .unwrap();
+
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(parsed["found"], false);
+    assert_eq!(parsed["count"], 0);
+}
+
+#[tokio::test]
+async fn test_memory_recall_tool_with_importance_filter() {
+    let store = create_test_memory_store();
+    let scope = create_test_scope();
+
+    // Store memories with different importance
+    {
+        let mut store_write = store.write().await;
+
+        let low_importance = crate::memory::MemoryRecord::builder()
+            .scope(scope.clone())
+            .content("Low importance memory about coffee")
+            .importance(2)
+            .build()
+            .unwrap();
+        store_write.store(low_importance).unwrap();
+
+        let high_importance = crate::memory::MemoryRecord::builder()
+            .scope(scope.clone())
+            .content("High importance memory about coffee")
+            .importance(9)
+            .build()
+            .unwrap();
+        store_write.store(high_importance).unwrap();
+    }
+
+    let tool = MemoryRecallTool::new(store, scope);
+
+    // Filter to only high importance
+    let result = tool
+        .execute(json!({
+            "query": "coffee",
+            "min_importance": 5
+        }))
+        .await
+        .unwrap();
+
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(parsed["found"], true);
+    assert_eq!(parsed["count"], 1);
+}
+
+#[tokio::test]
+async fn test_memory_forget_tool_basic() {
+    let store = create_test_memory_store();
+    let scope = create_test_scope();
+
+    // Store a memory
+    let id = {
+        let mut store_write = store.write().await;
+        let record = crate::memory::MemoryRecord::builder()
+            .scope(scope.clone())
+            .content("Memory to be forgotten")
+            .build()
+            .unwrap();
+        store_write.store(record).unwrap()
+    };
+
+    let tool = MemoryForgetTool::new(store.clone(), scope);
+
+    let result = tool.execute(json!({ "id": id })).await.unwrap();
+
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(parsed["deleted"], true);
+
+    // Verify it's deleted
+    let store = store.read().await;
+    assert_eq!(store.len(), 0);
+}
+
+#[tokio::test]
+async fn test_memory_forget_tool_not_found() {
+    let store = create_test_memory_store();
+    let scope = create_test_scope();
+    let tool = MemoryForgetTool::new(store, scope);
+
+    let result = tool
+        .execute(json!({ "id": "nonexistent-id" }))
+        .await
+        .unwrap();
+
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(parsed["deleted"], false);
+}
+
+#[tokio::test]
+async fn test_memory_forget_tool_scope_isolation() {
+    let store = create_test_memory_store();
+    let scope1 = MemoryScope::user("agent", "channel", "user1");
+    let scope2 = MemoryScope::user("agent", "channel", "user2");
+
+    // Store a memory with scope1
+    let id = {
+        let mut store_write = store.write().await;
+        let record = crate::memory::MemoryRecord::builder()
+            .scope(scope1.clone())
+            .content("User1's private memory")
+            .build()
+            .unwrap();
+        store_write.store(record).unwrap()
+    };
+
+    // Try to delete with scope2 (should fail)
+    let tool = MemoryForgetTool::new(store.clone(), scope2);
+    let result = tool.execute(json!({ "id": id })).await.unwrap();
+
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(parsed["deleted"], false);
+
+    // Verify memory still exists
+    let store = store.read().await;
+    assert_eq!(store.len(), 1);
+}
+
+#[tokio::test]
+async fn test_memory_tools_integration_workflow() {
+    let store = create_test_memory_store();
+    let scope = create_test_scope();
+
+    // 1. Store a memory
+    let store_tool = MemoryStoreTool::new(store.clone(), scope.clone());
+    let store_result = store_tool
+        .execute(json!({
+            "content": "User prefers dark mode in all applications",
+            "summary": "UI preference: dark mode",
+            "tags": ["ui", "preferences"],
+            "importance": 7
+        }))
+        .await
+        .unwrap();
+
+    let store_parsed: serde_json::Value = serde_json::from_str(&store_result).unwrap();
+    let memory_id = store_parsed["id"].as_str().unwrap().to_string();
+
+    // 2. Recall the memory
+    let recall_tool = MemoryRecallTool::new(store.clone(), scope.clone());
+    let recall_result = recall_tool
+        .execute(json!({
+            "query": "dark mode"
+        }))
+        .await
+        .unwrap();
+
+    let recall_parsed: serde_json::Value = serde_json::from_str(&recall_result).unwrap();
+    assert_eq!(recall_parsed["found"], true);
+    assert!(recall_parsed["memories"][0]["content_preview"]
+        .as_str()
+        .unwrap()
+        .contains("dark mode"));
+
+    // 3. Forget the memory
+    let forget_tool = MemoryForgetTool::new(store.clone(), scope.clone());
+    let forget_result = forget_tool.execute(json!({ "id": memory_id })).await.unwrap();
+
+    let forget_parsed: serde_json::Value = serde_json::from_str(&forget_result).unwrap();
+    assert_eq!(forget_parsed["deleted"], true);
+
+    // 4. Verify memory is no longer searchable
+    let recall_result = recall_tool
+        .execute(json!({
+            "query": "dark mode"
+        }))
+        .await
+        .unwrap();
+
+    let recall_parsed: serde_json::Value = serde_json::from_str(&recall_result).unwrap();
+    assert_eq!(recall_parsed["found"], false);
+}
+
+#[test]
+fn test_memory_tools_registry_with_memory() {
+    let store = create_test_memory_store();
+    let scope = create_test_scope();
+
+    let registry = ToolRegistry::with_memory(store, scope);
+
+    assert!(registry.contains("memory_store"));
+    assert!(registry.contains("memory_recall"));
+    assert!(registry.contains("memory_forget"));
+
+    // Should also have builtins
+    assert!(registry.contains("echo"));
+    assert!(registry.contains("current_time"));
+}
