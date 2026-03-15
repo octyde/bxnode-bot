@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::skills::{SkillMetadata, SkillRef};
+use crate::skills::{SkillMetadata, SkillRef, SkillRequirements};
 
 /// Skill loader for parsing SKILL.md files and scanning directories
 pub struct SkillLoader;
@@ -32,6 +32,27 @@ impl SkillLoader {
                 if skill_md.exists() {
                     match Self::parse_skill_metadata(&skill_md) {
                         Ok(skill_ref) => {
+                            // Skill gating: check OS compatibility
+                            if !SkillRequirements::is_os_compatible(&skill_ref.metadata.os) {
+                                tracing::debug!(
+                                    "Skipping skill '{}': OS not compatible (requires {:?})",
+                                    skill_ref.metadata.name,
+                                    skill_ref.metadata.os
+                                );
+                                continue;
+                            }
+
+                            // Skill gating: check requirements (bins, env vars)
+                            if let Some(ref reqs) = skill_ref.metadata.requires {
+                                if !reqs.is_satisfied() {
+                                    tracing::debug!(
+                                        "Skipping skill '{}': requirements not met",
+                                        skill_ref.metadata.name
+                                    );
+                                    continue;
+                                }
+                            }
+
                             tracing::debug!(
                                 "Discovered skill: {} at {}",
                                 skill_ref.metadata.name,

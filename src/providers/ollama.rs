@@ -228,8 +228,11 @@ impl Provider for OllamaProvider {
             None
         };
 
+        // Strip provider prefix (e.g. "ollama/llama3" → "llama3")
+        let model_name = request.model.split_once('/').map_or(request.model.as_str(), |(_,m)| m);
+
         let api_request = OllamaChatRequest {
-            model: request.model.clone(),
+            model: model_name.to_string(),
             messages,
             stream: false,
             options,
@@ -261,6 +264,7 @@ impl Provider for OllamaProvider {
                 completion_tokens,
                 total_tokens: prompt_tokens + completion_tokens,
             },
+            tool_calls: vec![],
         })
     }
 
@@ -290,8 +294,11 @@ impl Provider for OllamaProvider {
             None
         };
 
+        // Strip provider prefix (e.g. "ollama/llama3" → "llama3")
+        let model_name = request.model.split_once('/').map_or(request.model.as_str(), |(_,m)| m);
+
         let api_request = OllamaChatRequest {
-            model: request.model.clone(),
+            model: model_name.to_string(),
             messages,
             stream: true,
             options,

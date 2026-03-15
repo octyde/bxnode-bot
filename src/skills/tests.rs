@@ -164,6 +164,9 @@ fn test_skill_metadata_validation() {
         compatibility: None,
         metadata: Default::default(),
         allowed_tools: vec![],
+        emoji: None,
+        requires: None,
+        os: vec![],
     };
     assert!(metadata.validate().is_ok());
 
@@ -180,6 +183,9 @@ fn test_skill_metadata_validation() {
         compatibility: None,
         metadata: Default::default(),
         allowed_tools: vec![],
+        emoji: None,
+        requires: None,
+        os: vec![],
     };
     assert!(metadata.validate().is_err());
 
@@ -196,6 +202,9 @@ fn test_skill_metadata_validation() {
         compatibility: None,
         metadata: Default::default(),
         allowed_tools: vec![],
+        emoji: None,
+        requires: None,
+        os: vec![],
     };
     assert!(metadata.validate().is_err());
 
@@ -212,6 +221,9 @@ fn test_skill_metadata_validation() {
         compatibility: None,
         metadata: Default::default(),
         allowed_tools: vec![],
+        emoji: None,
+        requires: None,
+        os: vec![],
     };
     assert!(metadata.validate().is_err());
 
@@ -228,6 +240,9 @@ fn test_skill_metadata_validation() {
         compatibility: None,
         metadata: Default::default(),
         allowed_tools: vec![],
+        emoji: None,
+        requires: None,
+        os: vec![],
     };
     assert!(metadata.validate().is_err());
 
@@ -244,6 +259,9 @@ fn test_skill_metadata_validation() {
         compatibility: None,
         metadata: Default::default(),
         allowed_tools: vec![],
+        emoji: None,
+        requires: None,
+        os: vec![],
     };
     assert!(metadata.validate().is_err());
 
@@ -260,6 +278,9 @@ fn test_skill_metadata_validation() {
         compatibility: None,
         metadata: Default::default(),
         allowed_tools: vec![],
+        emoji: None,
+        requires: None,
+        os: vec![],
     };
     assert!(metadata.validate().is_err());
 }

@@ -29,3 +29,4 @@ sessions/
 config.yaml
 config.json5
 !config.example.yaml
+node_modules/

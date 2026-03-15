@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::context::AgentContext;
 use super::tools::{ToolCall, ToolRegistry, ToolResult};
 use super::AgentConfig;
-use crate::providers::{CompletionRequest, CompletionResponse, Provider};
+use crate::providers::{CompletionRequest, CompletionResponse, Provider, ToolDefinitionRequest};
 
 /// Maximum number of tool call iterations
 const MAX_TOOL_ITERATIONS: usize = 10;
@@ -82,6 +82,27 @@ impl AgentExecutor {
         }
     }
 
+    /// Get a clone of the provider Arc (for rebuilding with new tools).
+    pub fn provider(&self) -> Arc<dyn Provider> {
+        Arc::clone(&self.provider)
+    }
+
+    /// Build tool definitions for the completion request
+    fn build_tool_definitions(&self) -> Vec<ToolDefinitionRequest> {
+        let defs: Vec<ToolDefinitionRequest> = self.tools
+            .list()
+            .into_iter()
+            .map(|t| ToolDefinitionRequest {
+                name: t.name,
+                description: t.description,
+                input_schema: t.input_schema,
+            })
+            .collect();
+        eprintln!("[agent] built {} tool definitions: {:?}",
+            defs.len(), defs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>());
+        defs
+    }
+
     /// Execute a single turn (non-streaming)
     pub async fn execute(
         &self,
@@ -93,6 +114,7 @@ impl AgentExecutor {
 
         let mut usage = ExecutionUsage::default();
         let mut final_content = String::new();
+        let tool_defs = self.build_tool_definitions();
 
         // Main execution loop (handles tool calls)
         for iteration in 0..MAX_TOOL_ITERATIONS {
@@ -106,6 +128,7 @@ impl AgentExecutor {
                 max_tokens: Some(4096),
                 stop: vec![],
                 stream: false,
+                tools: tool_defs.clone(),
             };
 
             // Call the provider
@@ -163,6 +186,7 @@ impl AgentExecutor {
 
         let mut usage = ExecutionUsage::default();
         let mut final_content = String::new();
+        let tool_defs = self.build_tool_definitions();
 
         // Main execution loop
         for iteration in 0..MAX_TOOL_ITERATIONS {
@@ -176,6 +200,7 @@ impl AgentExecutor {
                 max_tokens: Some(4096),
                 stop: vec![],
                 stream: true,
+                tools: tool_defs.clone(),
             };
 
             // Call the provider with streaming
@@ -202,6 +227,9 @@ impl AgentExecutor {
 
             // Parse response for tool calls
             let tool_calls = self.parse_tool_calls_from_text(&response_content);
+            eprintln!("[agent] iteration {}: response {} chars, found {} tool_calls, has <tool_call>: {}",
+                iteration, response_content.len(), tool_calls.len(),
+                response_content.contains("<tool_call>"));
 
             if tool_calls.is_empty() {
                 // No tool calls, we're done
@@ -242,19 +270,68 @@ impl AgentExecutor {
         })
     }
 
-    /// Extract tool calls from a completion response
-    fn extract_tool_calls(&self, _response: &CompletionResponse) -> Vec<ToolCall> {
-        // TODO: Implement proper tool call extraction based on provider format
-        // This is a placeholder - real implementation would parse the response
-        // based on the provider's tool call format
-        vec![]
+    /// Extract tool calls from a completion response (native tool calling)
+    fn extract_tool_calls(&self, response: &CompletionResponse) -> Vec<ToolCall> {
+        let mut calls = Vec::new();
+
+        // Extract from provider-native tool_calls field
+        for tc in &response.tool_calls {
+            calls.push(ToolCall {
+                id: tc.id.clone(),
+                name: tc.name.clone(),
+                input: tc.arguments.clone(),
+            });
+        }
+
+        // Also try parsing from response text as fallback
+        if calls.is_empty() {
+            calls = self.parse_tool_calls_from_text(&response.content);
+        }
+
+        calls
     }
 
-    /// Parse tool calls from response text (simple format)
-    fn parse_tool_calls_from_text(&self, _text: &str) -> Vec<ToolCall> {
-        // TODO: Implement text-based tool call parsing
-        // This could look for patterns like <tool_call>...</tool_call>
-        vec![]
+    /// Parse tool calls from response text
+    ///
+    /// Supports XML-style: `<tool_call>{"name":"...","arguments":{...}}</tool_call>`
+    fn parse_tool_calls_from_text(&self, text: &str) -> Vec<ToolCall> {
+        let mut calls = Vec::new();
+        let mut counter = 0u32;
+
+        // Parse <tool_call>...</tool_call> blocks
+        let mut remaining = text;
+        while let Some(start) = remaining.find("<tool_call>") {
+            let after_tag = &remaining[start + 11..];
+            if let Some(end) = after_tag.find("</tool_call>") {
+                let json_str = after_tag[..end].trim();
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
+                    let name = parsed
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let arguments = parsed
+                        .get("arguments")
+                        .or_else(|| parsed.get("input"))
+                        .cloned()
+                        .unwrap_or(serde_json::json!({}));
+
+                    if !name.is_empty() {
+                        counter += 1;
+                        calls.push(ToolCall {
+                            id: format!("tc_{}", counter),
+                            name,
+                            input: arguments,
+                        });
+                    }
+                }
+                remaining = &after_tag[end + 12..];
+            } else {
+                break;
+            }
+        }
+
+        calls
     }
 
     /// Format tool results for context
@@ -330,6 +407,7 @@ mod tests {
                     completion_tokens: 5,
                     total_tokens: 15,
                 },
+                tool_calls: vec![],
             })
         }
 

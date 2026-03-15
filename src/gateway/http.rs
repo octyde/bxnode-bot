@@ -15,7 +15,7 @@ use axum::{
 use futures_util::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 
-use super::{AppState, UiAssets};
+use super::{AppState, ApiChatRequest, UiAssets};
 use crate::providers::{CompletionRequest, Message, Role};
 use crate::skills::{SkillInfo, SkillSyncer, SyncReport};
 
@@ -91,6 +91,30 @@ pub async fn stats(State(state): State<AppState>) -> impl IntoResponse {
         "channels": channel_count,
         "cron_jobs": cron_job_count,
         "memories": memory_count,
+    }))
+}
+
+/// Session stats endpoint — active sessions, usage, and token stats
+pub async fn session_stats(State(state): State<AppState>) -> impl IntoResponse {
+    let active_count = {
+        let active = state.active_sessions.read().await;
+        active.count()
+    };
+    let api_context_count = {
+        let ctxs = state.api_contexts.read().await;
+        ctxs.len()
+    };
+
+    let tokens_in = state.usage_stats.tokens_in.load(std::sync::atomic::Ordering::Relaxed);
+    let tokens_out = state.usage_stats.tokens_out.load(std::sync::atomic::Ordering::Relaxed);
+    let compactions = state.usage_stats.compactions.load(std::sync::atomic::Ordering::Relaxed);
+
+    Json(serde_json::json!({
+        "active_sessions": active_count,
+        "api_contexts": api_context_count,
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "compactions": compactions,
     }))
 }
 
@@ -188,6 +212,7 @@ pub async fn chat_completions(
         max_tokens: request.max_tokens,
         stop: vec![],
         stream: request.stream,
+        tools: vec![],
     };
 
     if request.stream {
@@ -640,4 +665,35 @@ pub async fn skills_config(State(state): State<AppState>) -> Response {
         "directories": directories,
     }))
     .into_response()
+}
+
+// ============================================================================
+// Chat API (full gateway pipeline: slash commands + agent)
+// ============================================================================
+
+/// POST /api/chat — send a message through the full gateway pipeline.
+///
+/// Handles slash commands locally and dispatches everything else to the agent.
+pub async fn chat(
+    State(state): State<AppState>,
+    Json(request): Json<ApiChatRequest>,
+) -> Response {
+    tracing::info!("[api/chat] message={:?}, context_key={}", &request.message[..request.message.len().min(80)], request.context_key);
+
+    match super::process_api_message(&state, &request).await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => {
+            tracing::error!("[api/chat] error: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": e.to_string(),
+                        "type": "api_error"
+                    }
+                })),
+            )
+                .into_response()
+        }
+    }
 }

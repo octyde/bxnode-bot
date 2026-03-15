@@ -135,6 +135,7 @@ impl SkillExtractor {
             max_tokens: Some(self.config.max_tokens),
             stream: false,
             stop: Vec::new(),
+            tools: vec![],
         };
 
         // Call AI with retries

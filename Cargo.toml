@@ -59,6 +59,7 @@ mime_guess = "2.0"
 
 # Async traits
 async-trait = "0.1"
+async-recursion = "1.1"
 
 # UUID generation
 uuid = { version = "1.11", features = ["v4", "serde"] }
@@ -82,9 +83,14 @@ serenity = { version = "0.12", optional = true, default-features = false, featur
 
 # URL encoding for Signal API
 urlencoding = "2.1"
+scraper = "0.25.0"
+url = "2.5.8"
+pdf-extract = "0.10.0"
+similar = "2.7.0"
+which = "8.0.2"
 
 [features]
-default = ["channels-core"]
+default = ["channels-core", "channel-telegram"]
 channels-core = []
 channel-telegram = ["teloxide"]
 channel-discord = ["serenity"]

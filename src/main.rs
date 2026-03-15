@@ -26,7 +26,7 @@ async fn main() -> Result<()> {
     // Execute command
     match cli.command {
         Commands::Serve(args) => {
-            tracing::info!("Starting BXNode Bot server on {}:{}", args.host, args.port);
+            tracing::info!("Starting BXNode Bot server...");
             bxnode_bot::gateway::serve(args).await?;
         }
         Commands::Config(args) => {

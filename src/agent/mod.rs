@@ -68,9 +68,14 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod coding_tools;
 pub mod context;
+pub mod diff_tool;
 pub mod execution;
+pub mod pdf_tool;
 pub mod tools;
+pub mod tts_tool;
+pub mod web_tools;
 
 #[cfg(test)]
 mod tools_tests;

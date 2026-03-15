@@ -146,6 +146,99 @@ pub struct SkillMetadata {
     /// Pre-approved tools this skill can use
     #[serde(default, rename = "allowed-tools")]
     pub allowed_tools: Vec<String>,
+
+    /// Emoji icon for display (e.g., "🔍", "📝")
+    #[serde(default)]
+    pub emoji: Option<String>,
+
+    // ========================================================================
+    // Skill gating (openclaw-compatible)
+    // ========================================================================
+    /// Requirements that must be satisfied for this skill to be loaded
+    #[serde(default)]
+    pub requires: Option<SkillRequirements>,
+
+    /// Supported operating systems (empty = all).
+    /// Values: "linux", "macos", "windows"
+    #[serde(default)]
+    pub os: Vec<String>,
+}
+
+/// Requirements for a skill to be eligible for loading.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SkillRequirements {
+    /// Required binary executables (checked via `which`)
+    #[serde(default)]
+    pub bins: Vec<String>,
+
+    /// Any one of these binaries must be present
+    #[serde(default, rename = "any-bins")]
+    pub any_bins: Vec<String>,
+
+    /// Required environment variables (must be set and non-empty)
+    #[serde(default)]
+    pub env: Vec<String>,
+
+    /// Required config keys (checked against config)
+    #[serde(default)]
+    pub config: Vec<String>,
+}
+
+impl SkillRequirements {
+    /// Check if all requirements are satisfied on the current system.
+    pub fn is_satisfied(&self) -> bool {
+        // Check required binaries
+        for bin in &self.bins {
+            if which::which(bin).is_err() {
+                tracing::debug!("Skill requirement not met: binary '{}' not found", bin);
+                return false;
+            }
+        }
+
+        // Check any-bins (at least one must be present)
+        if !self.any_bins.is_empty()
+            && !self.any_bins.iter().any(|bin| which::which(bin).is_ok())
+        {
+            tracing::debug!(
+                "Skill requirement not met: none of {:?} found",
+                self.any_bins
+            );
+            return false;
+        }
+
+        // Check required env vars
+        for var in &self.env {
+            match std::env::var(var) {
+                Ok(val) if !val.is_empty() => {}
+                _ => {
+                    tracing::debug!(
+                        "Skill requirement not met: env var '{}' not set",
+                        var
+                    );
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+
+    /// Check OS compatibility
+    pub fn is_os_compatible(os_list: &[String]) -> bool {
+        if os_list.is_empty() {
+            return true; // No restriction
+        }
+        let current_os = if cfg!(target_os = "linux") {
+            "linux"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else if cfg!(target_os = "windows") {
+            "windows"
+        } else {
+            "unknown"
+        };
+        os_list.iter().any(|os| os == current_os)
+    }
 }
 
 /// Default value for user_invocable (true)

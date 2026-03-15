@@ -9,6 +9,78 @@ use tokio::sync::RwLock;
 
 use crate::memory::{MemoryRecord, MemoryScope, MemoryStore};
 
+// ============================================================================
+// Tool Profiles
+// ============================================================================
+
+/// Tool profile controls which tools are available to the agent.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolProfile {
+    /// Only basic tools: current_time, calculator
+    Minimal,
+    /// Basic + memory + coding tools (file ops, git, shell)
+    Coding,
+    /// Coding + web tools (search, fetch)
+    Web,
+    /// All available tools
+    #[default]
+    Full,
+}
+
+impl std::str::FromStr for ToolProfile {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "minimal" => Ok(ToolProfile::Minimal),
+            "coding" => Ok(ToolProfile::Coding),
+            "web" => Ok(ToolProfile::Web),
+            "full" => Ok(ToolProfile::Full),
+            _ => anyhow::bail!("Unknown tool profile: {}. Use minimal, coding, web, or full.", s),
+        }
+    }
+}
+
+// ============================================================================
+// Security: Tool name validation
+// ============================================================================
+
+/// Maximum length for a tool name
+const MAX_TOOL_NAME_LEN: usize = 128;
+
+/// Validate a tool name: alphanumeric + `._-`, max 128 chars
+fn is_valid_tool_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_TOOL_NAME_LEN
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '-')
+}
+
+// ============================================================================
+// Security: Control character filtering
+// ============================================================================
+
+/// Strip C0 (0x00-0x1F except \n \r \t) and C1 (0x80-0x9F) control characters
+/// from tool result content to prevent injection attacks.
+pub fn sanitize_tool_output(input: &str) -> String {
+    input
+        .chars()
+        .filter(|&c| {
+            if c == '\n' || c == '\r' || c == '\t' {
+                true
+            } else if (c as u32) < 0x20 {
+                false // C0 control chars
+            } else if (0x80..=0x9F).contains(&(c as u32)) {
+                false // C1 control chars
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
 /// Tool definition for LLM consumption
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
@@ -125,6 +197,82 @@ impl ToolRegistry {
         registry
     }
 
+    /// Create a registry with builtins, memory, and coding tools
+    pub fn with_coding_tools(
+        memory: Arc<RwLock<MemoryStore>>,
+        scope: MemoryScope,
+        workspace_dir: std::path::PathBuf,
+        shell_enabled: bool,
+    ) -> Self {
+        use super::coding_tools;
+        let mut registry = Self::with_memory(memory, scope);
+        registry.register(Box::new(coding_tools::FileReadTool::new(workspace_dir.clone())));
+        registry.register(Box::new(coding_tools::FileWriteTool::new(workspace_dir.clone())));
+        registry.register(Box::new(coding_tools::FileEditTool::new(workspace_dir.clone())));
+        registry.register(Box::new(coding_tools::FileDeleteTool::new(workspace_dir.clone())));
+        registry.register(Box::new(coding_tools::ListDirectoryTool::new(workspace_dir.clone())));
+        registry.register(Box::new(coding_tools::FileSearchTool::new(workspace_dir.clone())));
+        registry.register(Box::new(coding_tools::GitStatusTool::new(workspace_dir.clone())));
+        registry.register(Box::new(coding_tools::GitDiffTool::new(workspace_dir.clone())));
+        registry.register(Box::new(coding_tools::GitLogTool::new(workspace_dir.clone())));
+        registry.register(Box::new(coding_tools::GitCommitTool::new(workspace_dir.clone())));
+        registry.register(Box::new(coding_tools::GitBranchTool::new(workspace_dir.clone())));
+        if shell_enabled {
+            registry.register(Box::new(coding_tools::ShellExecTool::new(workspace_dir)));
+        }
+        registry
+    }
+
+    /// Add process management tools to an existing registry
+    pub fn add_process_tools(&mut self, workspace_dir: std::path::PathBuf) {
+        let processes = super::coding_tools::new_process_registry();
+        self.register(Box::new(super::coding_tools::BackgroundExecTool::new(
+            workspace_dir,
+            processes.clone(),
+        )));
+        self.register(Box::new(super::coding_tools::ProcessStatusTool::new(
+            processes.clone(),
+        )));
+        self.register(Box::new(super::coding_tools::ProcessSignalTool::new(
+            processes,
+        )));
+    }
+
+    /// Add web tools (search + fetch) to an existing registry
+    pub fn add_web_tools(
+        &mut self,
+        web_search_config: super::web_tools::WebSearchConfig,
+    ) {
+        let cache = super::web_tools::WebCache::new();
+        self.register(Box::new(super::web_tools::WebSearchTool::new(
+            web_search_config,
+            cache.clone(),
+        )));
+        self.register(Box::new(super::web_tools::WebFetchTool::new(cache)));
+    }
+
+    /// Add PDF analysis tool to an existing registry
+    pub fn add_pdf_tool(&mut self, workspace_dir: std::path::PathBuf) {
+        self.register(Box::new(super::pdf_tool::PdfAnalyzeTool::new(workspace_dir)));
+    }
+
+    /// Add diff viewer tool to an existing registry
+    pub fn add_diff_tool(&mut self) {
+        self.register(Box::new(super::diff_tool::DiffViewTool));
+    }
+
+    /// Add TTS tool to an existing registry
+    pub fn add_tts_tool(
+        &mut self,
+        config: super::tts_tool::TtsConfig,
+        workspace_dir: std::path::PathBuf,
+    ) {
+        self.register(Box::new(super::tts_tool::TextToSpeechTool::new(
+            config,
+            workspace_dir,
+        )));
+    }
+
     /// Register a tool
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         self.tools.insert(tool.name().to_string(), tool);
@@ -158,12 +306,26 @@ impl ToolRegistry {
         self.tools.keys().cloned().collect()
     }
 
-    /// Execute a tool call
+    /// Execute a tool call with name validation and output sanitization
     pub async fn execute(&self, call: &ToolCall) -> ToolResult {
+        // Security: validate tool name
+        if !is_valid_tool_name(&call.name) {
+            return ToolResult::error(
+                &call.id,
+                format!(
+                    "Invalid tool name '{}': must be alphanumeric/._- and max {} chars",
+                    call.name, MAX_TOOL_NAME_LEN
+                ),
+            );
+        }
+
         match self.get(&call.name) {
             Some(tool) => match tool.execute(call.input.clone()).await {
-                Ok(content) => ToolResult::success(&call.id, content),
-                Err(e) => ToolResult::error(&call.id, e.to_string()),
+                Ok(content) => {
+                    // Security: sanitize output to strip control characters
+                    ToolResult::success(&call.id, sanitize_tool_output(&content))
+                }
+                Err(e) => ToolResult::error(&call.id, sanitize_tool_output(&e.to_string())),
             },
             None => ToolResult::error(&call.id, format!("Tool not found: {}", call.name)),
         }
@@ -769,5 +931,66 @@ mod tests {
         assert!(result.is_array());
         assert_eq!(result[0]["type"], "function");
         assert_eq!(result[0]["function"]["name"], "test");
+    }
+
+    // Security tests
+
+    #[test]
+    fn test_valid_tool_names() {
+        assert!(is_valid_tool_name("echo"));
+        assert!(is_valid_tool_name("web_search"));
+        assert!(is_valid_tool_name("file.read"));
+        assert!(is_valid_tool_name("my-tool-v2"));
+        assert!(is_valid_tool_name("tool123"));
+    }
+
+    #[test]
+    fn test_invalid_tool_names() {
+        assert!(!is_valid_tool_name(""));
+        assert!(!is_valid_tool_name("tool with spaces"));
+        assert!(!is_valid_tool_name("tool;injection"));
+        assert!(!is_valid_tool_name("tool\x00null"));
+        assert!(!is_valid_tool_name("tool/path"));
+        assert!(!is_valid_tool_name(&"a".repeat(129)));
+    }
+
+    #[tokio::test]
+    async fn test_tool_name_validation_rejects_bad_names() {
+        let registry = ToolRegistry::with_builtins();
+
+        let call = ToolCall {
+            id: "test-bad".to_string(),
+            name: "evil;rm -rf /".to_string(),
+            input: json!({}),
+        };
+
+        let result = registry.execute(&call).await;
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("Invalid tool name"));
+    }
+
+    #[test]
+    fn test_sanitize_tool_output() {
+        // Normal text passes through
+        assert_eq!(sanitize_tool_output("hello\nworld"), "hello\nworld");
+        // Tabs and carriage returns preserved
+        assert_eq!(sanitize_tool_output("col1\tcol2\r\n"), "col1\tcol2\r\n");
+        // C0 control chars stripped
+        assert_eq!(sanitize_tool_output("hello\x00world"), "helloworld");
+        assert_eq!(sanitize_tool_output("a\x01b\x02c"), "abc");
+        // C1 control chars stripped
+        assert_eq!(
+            sanitize_tool_output("before\u{0080}after"),
+            "beforeafter"
+        );
+    }
+
+    #[test]
+    fn test_tool_profile_from_str() {
+        assert_eq!("minimal".parse::<ToolProfile>().unwrap(), ToolProfile::Minimal);
+        assert_eq!("coding".parse::<ToolProfile>().unwrap(), ToolProfile::Coding);
+        assert_eq!("web".parse::<ToolProfile>().unwrap(), ToolProfile::Web);
+        assert_eq!("full".parse::<ToolProfile>().unwrap(), ToolProfile::Full);
+        assert!("unknown".parse::<ToolProfile>().is_err());
     }
 }

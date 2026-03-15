@@ -11,6 +11,7 @@ pub mod cron;
 pub mod gateway;
 pub mod memory;
 pub mod plugins;
+pub mod project;
 pub mod providers;
 pub mod session;
 pub mod skillgen;

@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.octyde.bxnode-bot",
   "build": {
-    "beforeDevCommand": "",
-    "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "",
+    "beforeDevCommand": "cd ../ui && npm run dev -- --port 18502",
+    "devUrl": "http://localhost:18502",
+    "beforeBuildCommand": "cd ../ui && npm run build",
     "frontendDist": "../ui/dist"
   },
   "app": {
@@ -14,8 +14,10 @@
     "windows": [
       {
         "title": "BXNode Bot",
-        "width": 1200,
-        "height": 800,
+        "width": 1400,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 600,
         "resizable": true,
         "fullscreen": false
       }

@@ -39,6 +39,26 @@ pub struct Config {
     /// Memory configuration
     #[serde(default)]
     pub memory: MemoryConfig,
+
+    /// Workspace configuration for coding projects
+    #[serde(default)]
+    pub workspace: WorkspaceConfig,
+
+    /// Tools configuration (web search, TTS, etc.)
+    #[serde(default)]
+    pub tools: ToolsConfig,
+
+    /// Session configuration
+    #[serde(default)]
+    pub session: SessionConfig,
+
+    /// Rate limiting configuration
+    #[serde(default)]
+    pub rate_limit: RateLimitConfig,
+
+    /// Channel bindings for per-chat configuration
+    #[serde(default)]
+    pub channel_bindings: Vec<ChannelBindingConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +131,10 @@ pub struct TelegramConfig {
     /// Allowed user IDs (empty = allow all)
     #[serde(default)]
     pub allowed_users: Vec<i64>,
+
+    /// Require admin approval for unknown users before processing messages
+    #[serde(default)]
+    pub approval_required: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,6 +213,27 @@ pub struct ProvidersConfig {
 
     /// Ollama configuration
     pub ollama: Option<OllamaConfig>,
+
+    /// Z.AI (Zhipu GLM) configuration
+    pub zai: Option<GenericProviderConfig>,
+
+    /// Groq configuration
+    pub groq: Option<GenericProviderConfig>,
+
+    /// DeepSeek configuration
+    pub deepseek: Option<GenericProviderConfig>,
+
+    /// Mistral configuration
+    pub mistral: Option<GenericProviderConfig>,
+
+    /// Venice.ai configuration
+    pub venice: Option<GenericProviderConfig>,
+
+    /// Qwen (DashScope) configuration
+    pub qwen: Option<GenericProviderConfig>,
+
+    /// Google Gemini configuration
+    pub gemini: Option<GenericProviderConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -198,6 +243,10 @@ pub struct AnthropicConfig {
 
     /// Base URL (optional)
     pub base_url: Option<String>,
+
+    /// Default model for this provider
+    #[serde(default)]
+    pub default_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +259,10 @@ pub struct OpenAIConfig {
 
     /// Organization ID (optional)
     pub organization: Option<String>,
+
+    /// Default model for this provider
+    #[serde(default)]
+    pub default_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -217,6 +270,24 @@ pub struct OllamaConfig {
     /// Base URL
     #[serde(default = "default_ollama_url")]
     pub base_url: String,
+
+    /// Default model for this provider
+    #[serde(default)]
+    pub default_model: Option<String>,
+}
+
+/// Generic provider configuration (for OpenAI-compatible APIs)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenericProviderConfig {
+    /// API key
+    pub api_key: String,
+
+    /// Base URL (optional)
+    pub base_url: Option<String>,
+
+    /// Default model for this provider
+    #[serde(default)]
+    pub default_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -344,6 +415,147 @@ impl Default for SkillsConfig {
     }
 }
 
+/// Workspace configuration for coding projects
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceConfig {
+    /// Base directory for project workspaces (default: ~/projects/)
+    #[serde(default = "default_workspace_base_dir")]
+    pub base_dir: String,
+
+    /// Whether coding tools are enabled by default for new projects
+    #[serde(default = "default_true")]
+    pub coding_tools_enabled: bool,
+
+    /// Whether shell execution is enabled by default for new projects
+    #[serde(default)]
+    pub shell_enabled: bool,
+
+    /// Global list of blocked paths (never allow read/write)
+    #[serde(default = "default_blocked_paths")]
+    pub blocked_paths: Vec<String>,
+}
+
+impl Default for WorkspaceConfig {
+    fn default() -> Self {
+        Self {
+            base_dir: default_workspace_base_dir(),
+            coding_tools_enabled: true,
+            shell_enabled: false,
+            blocked_paths: default_blocked_paths(),
+        }
+    }
+}
+
+/// Tools configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolsConfig {
+    /// Web tools configuration
+    #[serde(default)]
+    pub web: WebToolsConfig,
+
+    /// TTS tool configuration
+    #[serde(default)]
+    pub tts: Option<TtsToolConfig>,
+}
+
+/// Web tools configuration (search + fetch)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WebToolsConfig {
+    /// Web search configuration
+    #[serde(default)]
+    pub search: WebSearchConfig,
+}
+
+/// Web search provider configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WebSearchConfig {
+    /// Brave Search API key
+    pub brave_api_key: Option<String>,
+
+    /// Perplexity API key
+    pub perplexity_api_key: Option<String>,
+}
+
+/// TTS tool configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TtsToolConfig {
+    /// API key for TTS provider
+    pub api_key: String,
+
+    /// Base URL (default: OpenAI)
+    pub base_url: Option<String>,
+}
+
+/// Session management configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionConfig {
+    /// Idle session TTL in minutes (0 = no eviction)
+    #[serde(default = "default_idle_ttl_minutes")]
+    pub idle_ttl_minutes: u32,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            idle_ttl_minutes: default_idle_ttl_minutes(),
+        }
+    }
+}
+
+fn default_idle_ttl_minutes() -> u32 {
+    30
+}
+
+/// Rate limiting configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitConfig {
+    /// Maximum turns per minute per chat
+    #[serde(default = "default_max_turns_per_minute")]
+    pub max_turns_per_minute: u32,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            max_turns_per_minute: default_max_turns_per_minute(),
+        }
+    }
+}
+
+fn default_max_turns_per_minute() -> u32 {
+    20
+}
+
+/// Per-channel binding configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelBindingConfig {
+    /// Channel type (telegram, discord, etc.)
+    pub channel: String,
+
+    /// Chat ID to match
+    pub chat_id: String,
+
+    /// Project to use
+    pub project: Option<String>,
+
+    /// Model override
+    pub model: Option<String>,
+
+    /// Tool profile override
+    pub tool_profile: Option<String>,
+}
+
+fn default_workspace_base_dir() -> String {
+    "~/projects".to_string()
+}
+
+fn default_blocked_paths() -> Vec<String> {
+    vec![
+        "~/.ssh/*".to_string(),
+        "~/.gnupg/*".to_string(),
+    ]
+}
+
 // Default value functions
 fn default_host() -> String {
     "0.0.0.0".to_string()
@@ -400,6 +612,18 @@ impl Config {
         };
 
         Ok(config)
+    }
+
+    /// Save configuration to a file
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> anyhow::Result<()> {
+        let path = path.as_ref();
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let content = serde_yaml::to_string(self)?;
+        std::fs::write(path, content)?;
+        Ok(())
     }
 
     /// Load configuration from a file, or return default if not found

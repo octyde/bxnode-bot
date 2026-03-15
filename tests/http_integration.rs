@@ -9,30 +9,53 @@ use axum::{
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 
 use bxnode_bot::channels::ChannelRegistry;
+use bxnode_bot::config::Config;
 use bxnode_bot::cron::CronScheduler;
-use bxnode_bot::gateway::AppState;
+use bxnode_bot::gateway::approvals::ApprovalManager;
+use bxnode_bot::gateway::{AppState, BroadcastEvent, UsageStats};
 use bxnode_bot::memory::MemoryStore;
 use bxnode_bot::providers::ProviderRegistry;
+use bxnode_bot::session::{ActiveSessionMap, SessionManager};
+
+fn test_state(providers: ProviderRegistry) -> AppState {
+    let channels = ChannelRegistry::new();
+    let cron = CronScheduler::new();
+    let memory = MemoryStore::in_memory();
+    let (event_bus, _) = broadcast::channel::<BroadcastEvent>(16);
+    let approvals = ApprovalManager::new("/tmp/bxnode-test-approvals.json");
+    let sessions = SessionManager::new(std::path::PathBuf::from("/tmp/bxnode-test-sessions"));
+    let active_sessions = ActiveSessionMap::load(std::path::PathBuf::from("/tmp/bxnode-test-active-sessions.json"));
+
+    AppState {
+        providers: Arc::new(providers),
+        channels: Arc::new(channels),
+        cron: Arc::new(cron),
+        memory: Arc::new(RwLock::new(memory)),
+        skills: None,
+        event_bus,
+        approvals: Arc::new(approvals),
+        sessions: Arc::new(sessions),
+        active_sessions: Arc::new(RwLock::new(active_sessions)),
+        project_store: Arc::new(RwLock::new(bxnode_bot::project::ProjectStore::new(
+            std::path::PathBuf::from("/tmp/bxnode-test-projects"),
+            std::path::PathBuf::from("/tmp/bxnode-test-workspaces"),
+        ))),
+        config: Arc::new(Config::default()),
+        usage_stats: Arc::new(UsageStats::new()),
+        shutdown_tx: Arc::new(tokio::sync::watch::channel(false).0),
+        api_contexts: Arc::new(RwLock::new(std::collections::HashMap::new())),
+    }
+}
 
 /// Create the test app router with empty registry
 fn create_test_app() -> axum::Router {
     use axum::routing::{get, post};
     use bxnode_bot::gateway::http;
 
-    let providers = ProviderRegistry::new();
-    let channels = ChannelRegistry::new();
-    let cron = CronScheduler::new();
-    let memory = MemoryStore::in_memory();
-    let state = AppState {
-        providers: Arc::new(providers),
-        channels: Arc::new(channels),
-        cron: Arc::new(cron),
-        memory: Arc::new(RwLock::new(memory)),
-        skills: None,
-    };
+    let state = test_state(ProviderRegistry::new());
 
     axum::Router::new()
         .route("/health", get(http::health))
@@ -49,17 +72,7 @@ fn create_test_app_with_ollama() -> axum::Router {
 
     let mut providers = ProviderRegistry::new();
     providers.register(Arc::new(OllamaProvider::new(OllamaConfig::default())));
-    let channels = ChannelRegistry::new();
-    let cron = CronScheduler::new();
-    let memory = MemoryStore::in_memory();
-
-    let state = AppState {
-        providers: Arc::new(providers),
-        channels: Arc::new(channels),
-        cron: Arc::new(cron),
-        memory: Arc::new(RwLock::new(memory)),
-        skills: None,
-    };
+    let state = test_state(providers);
 
     axum::Router::new()
         .route("/health", get(http::health))

@@ -55,6 +55,55 @@ providers:
   ollama:
     base_url: "http://localhost:11434"
 
+  # Z.AI (Zhipu GLM) - https://open.bigmodel.cn/
+  # zai:
+  #   api_key: "${ZAI_API_KEY}"
+  #   # base_url: "https://api.z.ai/api/coding/paas/v4"  # Default: Coding Plan endpoint (recommended)
+  #   # For standard API use: "https://api.z.ai/api/paas/v4"
+
+  # Groq - https://console.groq.com/
+  # groq:
+  #   api_key: "${GROQ_API_KEY}"
+  #   # base_url: "https://api.groq.com/openai/v1"  # Optional
+
+  # DeepSeek - https://platform.deepseek.com/
+  # deepseek:
+  #   api_key: "${DEEPSEEK_API_KEY}"
+  #   # base_url: "https://api.deepseek.com"  # Optional
+
+  # Mistral - https://console.mistral.ai/
+  # mistral:
+  #   api_key: "${MISTRAL_API_KEY}"
+  #   # base_url: "https://api.mistral.ai/v1"  # Optional
+
+  # Venice.ai - https://venice.ai/
+  # venice:
+  #   api_key: "${VENICE_API_KEY}"
+  #   # base_url: "https://api.venice.ai/api/v1"  # Optional
+
+  # Qwen (Alibaba DashScope) - https://dashscope.console.aliyun.com/
+  # qwen:
+  #   api_key: "${QWEN_API_KEY}"
+  #   # base_url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"  # Optional
+
+  # Google Gemini - https://aistudio.google.com/apikey
+  # gemini:
+  #   api_key: "${GEMINI_API_KEY}"
+  #   # base_url: "https://generativelanguage.googleapis.com/v1beta/openai"  # Optional
+
+# Workspace configuration for coding projects
+workspace:
+  # Base directory for all project workspaces
+  base_dir: "~/projects"
+  # Enable coding tools (file read/write, search) by default for new projects
+  coding_tools_enabled: true
+  # Enable shell command execution by default for new projects (use with caution)
+  shell_enabled: false
+  # Paths that should never be accessible (glob patterns)
+  blocked_paths:
+    - "~/.ssh/*"
+    - "~/.gnupg/*"
+
 # Cron scheduler configuration
 cron:
   # Enable/disable the cron scheduler
@@ -81,6 +130,36 @@ memory:
   max_results: 5
   # Default TTL for memories in days (0 = no expiry)
   ttl_days: 90
+
+# Tool configurations
+tools:
+  web:
+    search:
+      # Search provider: "brave" or "perplexity"
+      # provider: "brave"
+      # api_key: "${BRAVE_SEARCH_API_KEY}"
+  tts:
+    # OpenAI TTS API for text-to-speech
+    # api_key: "${OPENAI_API_KEY}"
+    # base_url: "https://api.openai.com/v1"  # Optional
+
+# Session management
+session:
+  # Idle session context TTL in minutes (0 = no eviction)
+  idle_ttl_minutes: 30
+
+# Rate limiting (per-chat fixed window)
+rate_limit:
+  # Maximum messages per minute per chat (0 = no limit)
+  max_turns_per_minute: 20
+
+# Channel bindings — override model/project per chat
+# channel_bindings:
+#   - channel: telegram
+#     chat_id: "-1001234567890"
+#     project: my-project
+#     model: anthropic/claude-sonnet
+#     tool_profile: coding
 
 # Plugin configurations (native Rust plugins)
 plugins:

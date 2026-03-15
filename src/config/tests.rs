@@ -202,6 +202,11 @@ fn test_config_serialization_roundtrip() {
         skills: SkillsConfig::default(),
         cron: CronConfig::default(),
         memory: MemoryConfig::default(),
+        workspace: WorkspaceConfig::default(),
+        tools: ToolsConfig::default(),
+        session: SessionConfig::default(),
+        rate_limit: RateLimitConfig::default(),
+        channel_bindings: vec![],
     };
 
     // Serialize to YAML
@@ -214,6 +219,81 @@ fn test_config_serialization_roundtrip() {
     assert_eq!(restored.server.port, 5000);
     assert!(!restored.server.cors);
     assert_eq!(restored.agents.defaults.model, Some("test-model".to_string()));
+}
+
+#[test]
+fn test_save_after_setting_telegram() {
+    // Reproduce the exact flow from Tauri's update_channel_config + save_config_to_disk
+    let yaml_content = r#"
+server:
+  host: "0.0.0.0"
+  port: 3000
+  cors: true
+agents:
+  defaults:
+    model: "anthropic/claude-3-opus"
+channels: {}
+providers:
+  anthropic:
+    api_key: "${ANTHROPIC_API_KEY}"
+  openai:
+    api_key: "${OPENAI_API_KEY}"
+  ollama:
+    base_url: "http://localhost:11434"
+cron:
+  enabled: true
+  store_path: "~/.bxnode-bot/cron.json"
+  jobs: []
+memory:
+  enabled: true
+  store_path: "~/.bxnode-bot/memory.jsonl"
+  max_results: 5
+  ttl_days: 90
+plugins:
+  enabled: []
+  settings: {}
+skills:
+  enabled: true
+  directories:
+    - "~/.bxnode/skills"
+    - "./skills"
+  enabled_skills: []
+  disabled_skills: []
+  sync_sources: []
+"#;
+
+    let mut temp_file = NamedTempFile::with_suffix(".yaml").unwrap();
+    temp_file.write_all(yaml_content.as_bytes()).unwrap();
+
+    // 1. Load config (same as load_config Tauri command)
+    let mut config = Config::load(temp_file.path()).unwrap();
+
+    // 2. Set telegram channel (same as update_channel_config)
+    config.channels.telegram = Some(TelegramConfig {
+        token: "7123456789:AAFakeBotToken".to_string(),
+        allowed_users: vec![],
+        approval_required: false,
+    });
+
+    // 3. Clone config (same as save_config_to_disk)
+    let cloned = config.clone();
+
+    // 4. Serialize to YAML (same as Config::save)
+    let yaml = serde_yaml::to_string(&cloned).unwrap();
+    assert!(yaml.contains("7123456789:AAFakeBotToken"));
+
+    // 5. Save to temp file (same as Config::save)
+    let save_path = temp_file.path().with_extension("saved.yaml");
+    cloned.save(&save_path).unwrap();
+
+    // 6. Verify saved file can be loaded back
+    let reloaded = Config::load(&save_path).unwrap();
+    let tg = reloaded.channels.telegram.unwrap();
+    assert_eq!(tg.token, "7123456789:AAFakeBotToken");
+    assert!(tg.allowed_users.is_empty());
+
+    // Cleanup
+    let _ = std::fs::remove_file(&save_path);
 }
 
 #[test]

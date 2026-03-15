@@ -75,7 +75,12 @@ impl TelegramChannel {
 
     /// Convert teloxide message to our IncomingMessage
     fn convert_message(msg: &Message) -> Option<IncomingMessage> {
-        let chat_id = msg.chat.id.to_string();
+        // Build composite chat_id with topic support for forum groups
+        let chat_id = if let Some(thread_id) = msg.thread_id {
+            format!("{}:topic:{}", msg.chat.id, thread_id)
+        } else {
+            msg.chat.id.to_string()
+        };
         let user_id = msg.from.as_ref()?.id.to_string();
         let user_name = msg
             .from
@@ -146,6 +151,7 @@ impl TelegramChannel {
             metadata: serde_json::json!({
                 "message_id": msg.id.0,
                 "chat_type": format!("{:?}", msg.chat.kind),
+                "thread_id": msg.thread_id,
             }),
         };
 
@@ -158,12 +164,33 @@ impl TelegramChannel {
     }
 
     /// Convert our ParseMode to teloxide's
+    #[allow(dead_code)]
     fn convert_parse_mode(mode: Option<ParseMode>) -> Option<TgParseMode> {
         mode.and_then(|m| match m {
             ParseMode::Plain => None,
             ParseMode::Markdown => Some(TgParseMode::MarkdownV2),
             ParseMode::Html => Some(TgParseMode::Html),
         })
+    }
+}
+
+/// Parse a composite chat_id (e.g., "-1001234567890:topic:42") into (chat_id, optional thread_id).
+fn parse_composite_chat_id(composite: &str) -> anyhow::Result<(i64, Option<i32>)> {
+    if let Some(idx) = composite.find(":topic:") {
+        let chat_part = &composite[..idx];
+        let topic_part = &composite[idx + 7..];
+        let chat_id: i64 = chat_part
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid chat ID: {}", chat_part))?;
+        let thread_id: i32 = topic_part
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid topic ID: {}", topic_part))?;
+        Ok((chat_id, Some(thread_id)))
+    } else {
+        let chat_id: i64 = composite
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid chat ID: {}", composite))?;
+        Ok((chat_id, None))
     }
 }
 
@@ -192,7 +219,12 @@ impl Channel for TelegramChannel {
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
         self.shutdown_tx = Some(shutdown_tx);
 
-        // Spawn the message handler
+        // Spawn manual long-polling loop.
+        //
+        // We avoid teloxide's Dispatcher::dispatch() because it internally uses
+        // std::thread::scope + block_on which blocks a tokio worker thread and
+        // can starve the HTTP server.  Instead we poll via bot.get_updates()
+        // directly — fully async, no thread blocking.
         let handler_tx = event_tx.clone();
         tokio::spawn(async move {
             connected.store(true, Ordering::SeqCst);
@@ -203,53 +235,84 @@ impl Channel for TelegramChannel {
                 })
                 .await;
 
-            let handler = Update::filter_message().endpoint(
-                move |_bot: Bot, msg: Message, tx: mpsc::Sender<ChannelEvent>| {
-                    let allowed_users = allowed_users.clone();
-                    let allowed_chats = allowed_chats.clone();
+            // Try to delete any existing webhook so long-polling works
+            if let Err(e) = bot.delete_webhook().send().await {
+                tracing::warn!("Failed to delete webhook (non-fatal): {:?}", e);
+            }
 
-                    async move {
-                        // Check if user is allowed
-                        if let Some(user) = msg.from.as_ref() {
-                            let user_id = user.id.0 as i64;
-                            if !allowed_users.is_empty() && !allowed_users.contains(&user_id) {
+            let mut offset: i32 = 0;
+
+            loop {
+                // Check shutdown signal (non-blocking)
+                if shutdown_rx.try_recv().is_ok() {
+                    tracing::info!("Telegram channel shutting down");
+                    break;
+                }
+
+                // Long-poll for updates.
+                // Use timeout=10s which is safely below the default reqwest
+                // client timeout (~17s) to avoid TimedOut errors.
+                let result = bot
+                    .get_updates()
+                    .offset(offset)
+                    .timeout(10)
+                    .allowed_updates(vec![
+                        teloxide::types::AllowedUpdate::Message,
+                    ])
+                    .send()
+                    .await;
+
+                match result {
+                    Ok(updates) => {
+                        for update in updates {
+                            // Advance offset past this update
+                            offset = update.id.as_offset();
+
+                            // Extract message from the update kind
+                            let msg = match update.kind {
+                                teloxide::types::UpdateKind::Message(ref m) => m,
+                                _ => continue,
+                            };
+
+                            // Check user filter
+                            if let Some(user) = msg.from.as_ref() {
+                                let user_id = user.id.0 as i64;
+                                if !allowed_users.is_empty()
+                                    && !allowed_users.contains(&user_id)
+                                {
+                                    tracing::debug!(
+                                        "Ignoring message from unauthorized user: {}",
+                                        user_id
+                                    );
+                                    continue;
+                                }
+                            }
+
+                            // Check chat filter
+                            let chat_id = msg.chat.id.0;
+                            if !allowed_chats.is_empty()
+                                && !allowed_chats.contains(&chat_id)
+                            {
                                 tracing::debug!(
-                                    "Ignoring message from unauthorized user: {}",
-                                    user_id
+                                    "Ignoring message from unauthorized chat: {}",
+                                    chat_id
                                 );
-                                return Ok::<(), std::convert::Infallible>(());
+                                continue;
+                            }
+
+                            // Convert and forward
+                            if let Some(incoming) = TelegramChannel::convert_message(msg) {
+                                let _ = handler_tx
+                                    .send(ChannelEvent::Message(incoming))
+                                    .await;
                             }
                         }
-
-                        // Check if chat is allowed
-                        let chat_id = msg.chat.id.0;
-                        if !allowed_chats.is_empty() && !allowed_chats.contains(&chat_id) {
-                            tracing::debug!(
-                                "Ignoring message from unauthorized chat: {}",
-                                chat_id
-                            );
-                            return Ok::<(), std::convert::Infallible>(());
-                        }
-
-                        // Convert and send message
-                        if let Some(incoming) = TelegramChannel::convert_message(&msg) {
-                            let _ = tx.send(ChannelEvent::Message(incoming)).await;
-                        }
-
-                        Ok::<(), std::convert::Infallible>(())
                     }
-                },
-            );
-
-            let mut dispatcher = Dispatcher::builder(bot, handler)
-                .dependencies(dptree::deps![handler_tx])
-                .enable_ctrlc_handler()
-                .build();
-
-            tokio::select! {
-                _ = dispatcher.dispatch() => {}
-                _ = &mut shutdown_rx => {
-                    tracing::info!("Telegram channel shutting down");
+                    Err(e) => {
+                        tracing::error!("Telegram get_updates error: {:?}", e);
+                        // Backoff on error to avoid tight retry loop
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
                 }
             }
 
@@ -274,14 +337,17 @@ impl Channel for TelegramChannel {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Telegram bot not initialized"))?;
 
-        let chat_id: i64 = message
-            .chat_id
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid chat ID"))?;
+        // Parse composite chat_id with optional topic: "12345:topic:67" or just "12345"
+        let (chat_id, thread_id) = parse_composite_chat_id(&message.chat_id)?;
 
         let sent = match &message.content {
             MessageContent::Text { text } => {
                 let mut req = bot.send_message(ChatId(chat_id), text);
+
+                // Reply to the correct forum topic thread
+                if let Some(tid) = thread_id {
+                    req = req.message_thread_id(teloxide::types::ThreadId(teloxide::types::MessageId(tid)));
+                }
 
                 if let Some(parse_mode) = Self::convert_parse_mode(message.parse_mode) {
                     req = req.parse_mode(parse_mode);

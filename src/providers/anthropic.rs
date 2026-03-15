@@ -7,7 +7,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CompletionRequest, CompletionResponse, FinishReason, ModelInfo, Provider, Role, Usage,
+    CompletionRequest, CompletionResponse, FinishReason, ModelInfo, Provider, Role,
+    ToolCallResponse, Usage,
 };
 
 /// Anthropic API configuration
@@ -67,6 +68,14 @@ struct AnthropicMessage {
     content: String,
 }
 
+/// Anthropic tool definition
+#[derive(Debug, Serialize)]
+struct AnthropicToolDefinition {
+    name: String,
+    description: String,
+    input_schema: serde_json::Value,
+}
+
 /// Anthropic API request
 #[derive(Debug, Serialize)]
 struct AnthropicRequest {
@@ -81,6 +90,8 @@ struct AnthropicRequest {
     stop_sequences: Vec<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<AnthropicToolDefinition>,
 }
 
 /// Anthropic API response
@@ -98,6 +109,10 @@ struct ContentBlock {
     #[serde(rename = "type")]
     content_type: String,
     text: Option<String>,
+    /// Tool use fields
+    id: Option<String>,
+    name: Option<String>,
+    input: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -139,6 +154,8 @@ struct DeltaBlock {
     #[serde(rename = "type")]
     delta_type: String,
     text: Option<String>,
+    /// Partial JSON for tool input (type = "input_json_delta")
+    partial_json: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -209,14 +226,29 @@ impl Provider for AnthropicProvider {
             }
         }
 
+        // Convert tool definitions to Anthropic format
+        let tools: Vec<AnthropicToolDefinition> = request
+            .tools
+            .iter()
+            .map(|t| AnthropicToolDefinition {
+                name: t.name.clone(),
+                description: t.description.clone(),
+                input_schema: t.input_schema.clone(),
+            })
+            .collect();
+
+        // Strip provider prefix (e.g. "anthropic/claude-3-opus" → "claude-3-opus")
+        let model_name = request.model.split_once('/').map_or(request.model.as_str(), |(_,m)| m);
+
         let api_request = AnthropicRequest {
-            model: request.model.clone(),
+            model: model_name.to_string(),
             messages,
             max_tokens: request.max_tokens.unwrap_or(4096),
             system: system_prompt,
             temperature: request.temperature,
             stop_sequences: request.stop,
             stream: false,
+            tools,
         };
 
         let response = self
@@ -250,6 +282,23 @@ impl Provider for AnthropicProvider {
             .collect::<Vec<_>>()
             .join("");
 
+        // Extract tool_use content blocks
+        let tool_calls: Vec<ToolCallResponse> = api_response
+            .content
+            .iter()
+            .filter_map(|block| {
+                if block.content_type == "tool_use" {
+                    Some(ToolCallResponse {
+                        id: block.id.clone().unwrap_or_default(),
+                        name: block.name.clone().unwrap_or_default(),
+                        arguments: block.input.clone().unwrap_or(serde_json::json!({})),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
         Ok(CompletionResponse {
             content,
             model: api_response.model,
@@ -262,6 +311,7 @@ impl Provider for AnthropicProvider {
                 completion_tokens: api_response.usage.output_tokens,
                 total_tokens: api_response.usage.input_tokens + api_response.usage.output_tokens,
             },
+            tool_calls,
         })
     }
 
@@ -284,14 +334,29 @@ impl Provider for AnthropicProvider {
             }
         }
 
+        // Convert tool definitions to Anthropic format
+        let tools: Vec<AnthropicToolDefinition> = request
+            .tools
+            .iter()
+            .map(|t| AnthropicToolDefinition {
+                name: t.name.clone(),
+                description: t.description.clone(),
+                input_schema: t.input_schema.clone(),
+            })
+            .collect();
+
+        // Strip provider prefix (e.g. "anthropic/claude-3-opus" → "claude-3-opus")
+        let model_name = request.model.split_once('/').map_or(request.model.as_str(), |(_,m)| m);
+
         let api_request = AnthropicRequest {
-            model: request.model.clone(),
+            model: model_name.to_string(),
             messages,
             max_tokens: request.max_tokens.unwrap_or(4096),
             system: system_prompt,
             temperature: request.temperature,
             stop_sequences: request.stop,
             stream: true,
+            tools,
         };
 
         let response = self
@@ -311,11 +376,22 @@ impl Provider for AnthropicProvider {
 
         let byte_stream = response.bytes_stream();
 
+        // State for accumulating tool_use content blocks
+        // Anthropic streams: content_block_start (id, name) → content_block_delta (input_json_delta) → content_block_stop
+        #[derive(Default)]
+        struct ToolUseAccumulator {
+            current_id: String,
+            current_name: String,
+            current_input: String,
+            in_tool_use: bool,
+            completed: Vec<(String, String, String)>, // (id, name, input_json)
+        }
+
         let stream = byte_stream
             .map(|result| {
                 result.map_err(|e| anyhow::anyhow!("Stream error: {}", e))
             })
-            .scan(String::new(), |buffer, result| {
+            .scan((String::new(), ToolUseAccumulator::default()), |(buffer, tool_acc), result| {
                 let chunks = match result {
                     Ok(bytes) => {
                         buffer.push_str(&String::from_utf8_lossy(&bytes));
@@ -323,19 +399,66 @@ impl Provider for AnthropicProvider {
 
                         // Process complete SSE events
                         while let Some(pos) = buffer.find("\n\n") {
-                            let event = buffer[..pos].to_string();
+                            let event_text = buffer[..pos].to_string();
                             *buffer = buffer[pos + 2..].to_string();
 
-                            // Parse SSE event
-                            if let Some(data) = event.strip_prefix("data: ") {
+                            // Anthropic SSE has "event: type\ndata: json" format
+                            let mut data_str = None;
+                            for line in event_text.lines() {
+                                if let Some(d) = line.strip_prefix("data: ") {
+                                    data_str = Some(d.to_string());
+                                }
+                            }
+
+                            if let Some(data) = data_str {
                                 if data == "[DONE]" {
                                     continue;
                                 }
-                                if let Ok(event) = serde_json::from_str::<StreamEvent>(data) {
-                                    if let StreamEvent::ContentBlockDelta { delta, .. } = event {
-                                        if let Some(text) = delta.text {
-                                            chunks.push(Ok(text));
+                                if let Ok(event) = serde_json::from_str::<StreamEvent>(&data) {
+                                    match event {
+                                        StreamEvent::ContentBlockStart { content_block, .. } => {
+                                            if content_block.content_type == "tool_use" {
+                                                tool_acc.in_tool_use = true;
+                                                tool_acc.current_id = content_block.id.unwrap_or_default();
+                                                tool_acc.current_name = content_block.name.unwrap_or_default();
+                                                tool_acc.current_input.clear();
+                                            }
                                         }
+                                        StreamEvent::ContentBlockDelta { delta, .. } => {
+                                            if tool_acc.in_tool_use {
+                                                if let Some(partial) = delta.partial_json {
+                                                    tool_acc.current_input.push_str(&partial);
+                                                }
+                                            } else if let Some(text) = delta.text {
+                                                chunks.push(Ok(text));
+                                            }
+                                        }
+                                        StreamEvent::ContentBlockStop { .. } => {
+                                            if tool_acc.in_tool_use {
+                                                tool_acc.completed.push((
+                                                    tool_acc.current_id.clone(),
+                                                    tool_acc.current_name.clone(),
+                                                    tool_acc.current_input.clone(),
+                                                ));
+                                                tool_acc.in_tool_use = false;
+                                            }
+                                        }
+                                        StreamEvent::MessageDelta { .. } | StreamEvent::MessageStop => {
+                                            // Emit accumulated tool calls as XML
+                                            if !tool_acc.completed.is_empty() {
+                                                let mut xml = String::new();
+                                                for (id, name, input) in &tool_acc.completed {
+                                                    let input_json = if input.is_empty() { "{}" } else { input.as_str() };
+                                                    xml.push_str(&format!(
+                                                        "<tool_call>{{\"id\":\"{}\",\"name\":\"{}\",\"arguments\":{}}}</tool_call>",
+                                                        id, name, input_json
+                                                    ));
+                                                }
+                                                chunks.push(Ok(xml));
+                                                tool_acc.completed.clear();
+                                            }
+                                        }
+                                        _ => {}
                                     }
                                 }
                             }

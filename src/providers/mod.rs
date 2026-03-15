@@ -3,11 +3,17 @@
 //! Supported providers:
 //! - Anthropic (Claude)
 //! - OpenAI (GPT)
-//! - AWS Bedrock
 //! - Ollama (local)
-//! - Z.AI
+//! - Z.AI (Zhipu GLM)
+//! - Groq
+//! - DeepSeek
+//! - Mistral
 //! - Venice.ai
-//! - Qwen Portal
+//! - Qwen (DashScope)
+//! - Google Gemini
+//!
+//! Planned:
+//! - AWS Bedrock
 
 #[cfg(test)]
 mod tests;
@@ -29,6 +35,28 @@ pub enum Role {
     System,
     User,
     Assistant,
+}
+
+/// Tool definition for provider requests (matches OpenAI function calling format)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDefinitionRequest {
+    /// Tool name
+    pub name: String,
+    /// Tool description
+    pub description: String,
+    /// Input schema (JSON Schema)
+    pub input_schema: serde_json::Value,
+}
+
+/// Tool call parsed from provider response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallResponse {
+    /// Tool call ID
+    pub id: String,
+    /// Tool name
+    pub name: String,
+    /// Tool arguments as JSON
+    pub arguments: serde_json::Value,
 }
 
 /// Completion request
@@ -55,6 +83,10 @@ pub struct CompletionRequest {
     /// Whether to stream the response
     #[serde(default)]
     pub stream: bool,
+
+    /// Available tools for function calling
+    #[serde(default)]
+    pub tools: Vec<ToolDefinitionRequest>,
 }
 
 /// Completion response
@@ -71,6 +103,10 @@ pub struct CompletionResponse {
 
     /// Token usage
     pub usage: Usage,
+
+    /// Tool calls from the model (if any)
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCallResponse>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +157,7 @@ pub struct ModelInfo {
 pub mod anthropic;
 pub mod ollama;
 pub mod openai;
+pub mod openai_compatible;
 pub mod registry;
 
 pub use registry::ProviderRegistry;

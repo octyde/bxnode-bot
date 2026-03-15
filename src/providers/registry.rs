@@ -7,6 +7,10 @@ use super::{
     anthropic::{AnthropicConfig, AnthropicProvider},
     ollama::{OllamaConfig, OllamaProvider},
     openai::{OpenAIConfig, OpenAIProvider},
+    openai_compatible::{
+        deepseek_models, gemini_models, groq_models, mistral_models, qwen_models, venice_models,
+        zai_models, OpenAICompatibleConfig, OpenAICompatibleProvider,
+    },
     ModelInfo, Provider,
 };
 use crate::config::Config;
@@ -61,6 +65,132 @@ impl ProviderRegistry {
                 base_url: ollama_config.base_url.clone(),
             };
             registry.register(Arc::new(OllamaProvider::new(provider_config)));
+        }
+
+        // Register Z.AI if configured
+        if let Some(ref zai_config) = config.providers.zai {
+            registry.register(Arc::new(OpenAICompatibleProvider::new(
+                OpenAICompatibleConfig {
+                    provider_id: "zai".to_string(),
+                    api_key: zai_config.api_key.clone(),
+                    base_url: zai_config
+                        .base_url
+                        .clone()
+                        .unwrap_or_else(|| "https://api.z.ai/api/coding/paas/v4".to_string()),
+                    models: zai_models(),
+                    completions_path: Some("/chat/completions".to_string()),
+                    extra_headers: vec![("Accept-Language".to_string(), "en-US,en".to_string())],
+                    extra_body: vec![
+                        ("tool_stream".to_string(), serde_json::json!(true)),
+                    ],
+                },
+            )));
+        }
+
+        // Register Groq if configured
+        if let Some(ref groq_config) = config.providers.groq {
+            registry.register(Arc::new(OpenAICompatibleProvider::new(
+                OpenAICompatibleConfig {
+                    provider_id: "groq".to_string(),
+                    api_key: groq_config.api_key.clone(),
+                    base_url: groq_config
+                        .base_url
+                        .clone()
+                        .unwrap_or_else(|| "https://api.groq.com/openai/v1".to_string()),
+                    models: groq_models(),
+                    completions_path: Some("/chat/completions".to_string()),
+                    extra_headers: vec![],
+                    extra_body: vec![],
+                },
+            )));
+        }
+
+        // Register DeepSeek if configured
+        if let Some(ref deepseek_config) = config.providers.deepseek {
+            registry.register(Arc::new(OpenAICompatibleProvider::new(
+                OpenAICompatibleConfig {
+                    provider_id: "deepseek".to_string(),
+                    api_key: deepseek_config.api_key.clone(),
+                    base_url: deepseek_config
+                        .base_url
+                        .clone()
+                        .unwrap_or_else(|| "https://api.deepseek.com".to_string()),
+                    models: deepseek_models(),
+                    completions_path: Some("/v1/chat/completions".to_string()),
+                    extra_headers: vec![],
+                    extra_body: vec![],
+                },
+            )));
+        }
+
+        // Register Mistral if configured
+        if let Some(ref mistral_config) = config.providers.mistral {
+            registry.register(Arc::new(OpenAICompatibleProvider::new(
+                OpenAICompatibleConfig {
+                    provider_id: "mistral".to_string(),
+                    api_key: mistral_config.api_key.clone(),
+                    base_url: mistral_config
+                        .base_url
+                        .clone()
+                        .unwrap_or_else(|| "https://api.mistral.ai/v1".to_string()),
+                    models: mistral_models(),
+                    completions_path: Some("/chat/completions".to_string()),
+                    extra_headers: vec![],
+                    extra_body: vec![],
+                },
+            )));
+        }
+
+        // Register Venice.ai if configured
+        if let Some(ref venice_config) = config.providers.venice {
+            registry.register(Arc::new(OpenAICompatibleProvider::new(
+                OpenAICompatibleConfig {
+                    provider_id: "venice".to_string(),
+                    api_key: venice_config.api_key.clone(),
+                    base_url: venice_config
+                        .base_url
+                        .clone()
+                        .unwrap_or_else(|| "https://api.venice.ai/api/v1".to_string()),
+                    models: venice_models(),
+                    completions_path: Some("/chat/completions".to_string()),
+                    extra_headers: vec![],
+                    extra_body: vec![],
+                },
+            )));
+        }
+
+        // Register Qwen if configured
+        if let Some(ref qwen_config) = config.providers.qwen {
+            registry.register(Arc::new(OpenAICompatibleProvider::new(
+                OpenAICompatibleConfig {
+                    provider_id: "qwen".to_string(),
+                    api_key: qwen_config.api_key.clone(),
+                    base_url: qwen_config.base_url.clone().unwrap_or_else(|| {
+                        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1".to_string()
+                    }),
+                    models: qwen_models(),
+                    completions_path: Some("/chat/completions".to_string()),
+                    extra_headers: vec![],
+                    extra_body: vec![],
+                },
+            )));
+        }
+
+        // Register Google Gemini if configured
+        if let Some(ref gemini_config) = config.providers.gemini {
+            registry.register(Arc::new(OpenAICompatibleProvider::new(
+                OpenAICompatibleConfig {
+                    provider_id: "gemini".to_string(),
+                    api_key: gemini_config.api_key.clone(),
+                    base_url: gemini_config.base_url.clone().unwrap_or_else(|| {
+                        "https://generativelanguage.googleapis.com/v1beta/openai".to_string()
+                    }),
+                    models: gemini_models(),
+                    completions_path: Some("/chat/completions".to_string()),
+                    extra_headers: vec![],
+                    extra_body: vec![],
+                },
+            )));
         }
 
         registry
@@ -278,6 +408,7 @@ mod tests {
         let mut config = Config::default();
         config.providers.ollama = Some(crate::config::OllamaConfig {
             base_url: "http://localhost:11434".to_string(),
+            default_model: None,
         });
 
         let registry = ProviderRegistry::from_config(&config);

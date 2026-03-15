@@ -62,6 +62,7 @@ fn test_completion_request_basic() {
         max_tokens: None,
         stop: vec![],
         stream: false,
+        tools: vec![],
     };
 
     assert_eq!(request.model, "claude-3-opus");
@@ -87,6 +88,7 @@ fn test_completion_request_serialization() {
         max_tokens: Some(1000),
         stop: vec!["STOP".to_string()],
         stream: true,
+        tools: vec![],
     };
 
     let json = serde_json::to_value(&request).unwrap();
@@ -132,6 +134,7 @@ fn test_completion_response() {
             completion_tokens: 5,
             total_tokens: 15,
         },
+        tool_calls: vec![],
     };
 
     assert_eq!(response.content, "The answer is 4.");
@@ -234,6 +237,7 @@ fn test_completion_response_serialization_roundtrip() {
             completion_tokens: 10,
             total_tokens: 35,
         },
+        tool_calls: vec![],
     };
 
     let json = serde_json::to_value(&response).unwrap();
@@ -276,6 +280,7 @@ fn test_completion_request_with_all_fields() {
         max_tokens: Some(500),
         stop: vec!["END".to_string(), "STOP".to_string()],
         stream: true,
+        tools: vec![],
     };
 
     let json = serde_json::to_value(&request).unwrap();
