@@ -166,11 +166,15 @@ impl AgentContext {
             .saturating_sub(self.config.response_reserve)
     }
 
-    /// Truncate oldest messages to fit within limits
-    pub fn truncate_to_fit(&mut self) {
+    /// Truncate oldest messages to fit within limits.
+    /// Returns the number of messages removed.
+    pub fn truncate_to_fit(&mut self) -> usize {
+        let mut removed = 0;
         while !self.within_limits() && !self.messages.is_empty() {
             self.messages.remove(0);
+            removed += 1;
         }
+        removed
     }
 
     /// Get a summary of the context state

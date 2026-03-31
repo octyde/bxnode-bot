@@ -4,6 +4,7 @@
 //! that supports multiple messaging platforms and LLM providers.
 
 pub mod agent;
+pub mod apps;
 pub mod channels;
 pub mod cli;
 pub mod config;

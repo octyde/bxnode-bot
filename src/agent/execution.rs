@@ -8,6 +8,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use super::context::AgentContext;
+use super::context_engine::{CompactionResult, ContextEngine, LegacyContextEngine, TurnInfo};
 use super::tools::{ToolCall, ToolRegistry, ToolResult};
 use super::AgentConfig;
 use crate::providers::{CompletionRequest, CompletionResponse, Provider, ToolDefinitionRequest};
@@ -67,6 +68,9 @@ pub struct AgentExecutor {
 
     /// Agent configuration
     config: AgentConfig,
+
+    /// Context engine for managing context lifecycle
+    context_engine: Arc<dyn ContextEngine>,
 }
 
 impl AgentExecutor {
@@ -79,6 +83,22 @@ impl AgentExecutor {
             provider,
             tools,
             config,
+            context_engine: Arc::new(LegacyContextEngine),
+        }
+    }
+
+    /// Create with a custom context engine
+    pub fn with_context_engine(
+        provider: Arc<dyn Provider>,
+        tools: Arc<ToolRegistry>,
+        config: AgentConfig,
+        engine: Arc<dyn ContextEngine>,
+    ) -> Self {
+        Self {
+            provider,
+            tools,
+            config,
+            context_engine: engine,
         }
     }
 
@@ -114,16 +134,29 @@ impl AgentExecutor {
 
         let mut usage = ExecutionUsage::default();
         let mut final_content = String::new();
+        let mut total_compacted: usize = 0;
         let tool_defs = self.build_tool_definitions();
 
         // Main execution loop (handles tool calls)
         for iteration in 0..MAX_TOOL_ITERATIONS {
             usage.iterations = iteration + 1;
 
+            // Compact context via engine
+            let compaction = self.context_engine.compact(context).await;
+            total_compacted += compaction.messages_removed;
+
+            // Assemble messages via engine
+            let turn = TurnInfo {
+                model: self.config.model.clone(),
+                user_prompt: user_message.to_string(),
+                turn_number: iteration,
+            };
+            let messages = self.context_engine.assemble(context, &turn).await;
+
             // Build completion request
             let request = CompletionRequest {
                 model: self.config.model.clone(),
-                messages: context.messages_for_provider(),
+                messages,
                 temperature: self.config.temperature,
                 max_tokens: Some(4096),
                 stop: vec![],
@@ -146,6 +179,8 @@ impl AgentExecutor {
                 // No tool calls, we're done
                 final_content = response.content.clone();
                 context.add_assistant_message(&response.content);
+                // Post-turn hook
+                self.context_engine.after_turn(context, &response.content).await;
                 break;
             }
 
@@ -164,6 +199,7 @@ impl AgentExecutor {
         Ok(ExecutionResult {
             content: final_content,
             usage,
+            messages_compacted: total_compacted,
         })
     }
 
@@ -186,16 +222,29 @@ impl AgentExecutor {
 
         let mut usage = ExecutionUsage::default();
         let mut final_content = String::new();
+        let mut total_compacted: usize = 0;
         let tool_defs = self.build_tool_definitions();
 
         // Main execution loop
         for iteration in 0..MAX_TOOL_ITERATIONS {
             usage.iterations = iteration + 1;
 
+            // Compact context via engine
+            let compaction = self.context_engine.compact(context).await;
+            total_compacted += compaction.messages_removed;
+
+            // Assemble messages via engine
+            let turn = TurnInfo {
+                model: self.config.model.clone(),
+                user_prompt: user_message.to_string(),
+                turn_number: iteration,
+            };
+            let messages = self.context_engine.assemble(context, &turn).await;
+
             // Build completion request
             let request = CompletionRequest {
                 model: self.config.model.clone(),
-                messages: context.messages_for_provider(),
+                messages,
                 temperature: self.config.temperature,
                 max_tokens: Some(4096),
                 stop: vec![],
@@ -235,6 +284,8 @@ impl AgentExecutor {
                 // No tool calls, we're done
                 final_content = response_content.clone();
                 context.add_assistant_message(&response_content);
+                // Post-turn hook
+                self.context_engine.after_turn(context, &response_content).await;
                 break;
             }
 
@@ -267,6 +318,7 @@ impl AgentExecutor {
         Ok(ExecutionResult {
             content: final_content,
             usage,
+            messages_compacted: total_compacted,
         })
     }
 
@@ -365,6 +417,9 @@ pub struct ExecutionResult {
 
     /// Usage statistics
     pub usage: ExecutionUsage,
+
+    /// Number of messages removed by context compaction (0 = no compaction)
+    pub messages_compacted: usize,
 }
 
 #[cfg(test)]

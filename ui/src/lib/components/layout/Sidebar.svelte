@@ -10,6 +10,7 @@
     MessagesSquare,
     Settings,
     Layers,
+    Store,
   } from "lucide-svelte";
   import { appStore } from "$lib/stores/app.svelte";
   import { serverStore } from "$lib/stores/server.svelte";
@@ -24,6 +25,7 @@
     { id: "cron", label: "Cron Jobs", icon: Clock },
     { id: "memory", label: "Memory", icon: Brain },
     { id: "chat", label: "Chat", icon: MessagesSquare },
+    { id: "apps", label: "App Store", icon: Store },
     { id: "settings", label: "Settings", icon: Settings },
   ];
 </script>

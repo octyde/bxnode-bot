@@ -1,0 +1,70 @@
+import type { Component } from "svelte";
+import {
+  Newspaper, DollarSign, Package, Briefcase, Code, FileText,
+  Globe, Heart, Image, MessageCircle, Music, Search, Shield,
+  ShoppingCart, Star, TrendingUp, Users, Zap, BookOpen, Camera,
+  Cpu, Database, Film, Gamepad2, Gift, Headphones, Key, Layers,
+  Layout, Link, Mail, Map, Megaphone, Monitor, Palette, PenTool,
+  Phone, PieChart, Rocket, Server, Settings, Smile, Target,
+  Terminal, Tv, Upload, Video, Wifi, Clock, Calendar,
+} from "lucide-svelte";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const iconMap: Record<string, Component<any>> = {
+  newspaper: Newspaper,
+  "dollar-sign": DollarSign,
+  package: Package,
+  briefcase: Briefcase,
+  code: Code,
+  "file-text": FileText,
+  globe: Globe,
+  heart: Heart,
+  image: Image,
+  "message-circle": MessageCircle,
+  music: Music,
+  search: Search,
+  shield: Shield,
+  "shopping-cart": ShoppingCart,
+  star: Star,
+  "trending-up": TrendingUp,
+  users: Users,
+  zap: Zap,
+  "book-open": BookOpen,
+  camera: Camera,
+  cpu: Cpu,
+  database: Database,
+  film: Film,
+  gamepad: Gamepad2,
+  gift: Gift,
+  headphones: Headphones,
+  key: Key,
+  layers: Layers,
+  layout: Layout,
+  link: Link,
+  mail: Mail,
+  map: Map,
+  megaphone: Megaphone,
+  monitor: Monitor,
+  palette: Palette,
+  "pen-tool": PenTool,
+  phone: Phone,
+  "pie-chart": PieChart,
+  rocket: Rocket,
+  server: Server,
+  settings: Settings,
+  smile: Smile,
+  target: Target,
+  terminal: Terminal,
+  tv: Tv,
+  upload: Upload,
+  video: Video,
+  wifi: Wifi,
+  clock: Clock,
+  calendar: Calendar,
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function getAppIcon(iconName?: string): Component<any> {
+  if (!iconName) return Package;
+  return iconMap[iconName] || Package;
+}

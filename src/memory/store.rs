@@ -5,6 +5,9 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+use std::sync::Arc;
+
+use super::embeddings::{EmbeddingProvider, VectorIndex, reciprocal_rank_fusion};
 use super::search::{SearchIndex, MemorySearchResult};
 use super::{MemoryRecord, MemoryScope};
 
@@ -21,6 +24,12 @@ pub struct MemoryStore {
 
     /// Store version for future migrations
     version: u32,
+
+    /// Optional vector index for embedding-based search
+    vector_index: Option<VectorIndex>,
+
+    /// Optional embedding provider
+    embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
 }
 
 impl MemoryStore {
@@ -31,6 +40,8 @@ impl MemoryStore {
             records: HashMap::new(),
             index: SearchIndex::new(),
             version: 1,
+            vector_index: None,
+            embedding_provider: None,
         }
     }
 
@@ -50,6 +61,8 @@ impl MemoryStore {
             records: HashMap::new(),
             index: SearchIndex::new(),
             version: 1,
+            vector_index: None,
+            embedding_provider: None,
         };
 
         // Load existing records if file exists
@@ -58,6 +71,28 @@ impl MemoryStore {
         }
 
         Ok(store)
+    }
+
+    /// Configure embedding-based vector search.
+    /// Call this after `open()` to enable hybrid search.
+    pub fn with_embeddings(
+        &mut self,
+        provider: Arc<dyn EmbeddingProvider>,
+    ) -> anyhow::Result<()> {
+        let dims = provider.dimensions();
+        let vec_path = self
+            .path
+            .as_ref()
+            .map(|p| p.with_extension("vec"));
+
+        let vi = match vec_path {
+            Some(p) => VectorIndex::open(p, dims)?,
+            None => VectorIndex::new(dims),
+        };
+
+        self.vector_index = Some(vi);
+        self.embedding_provider = Some(provider);
+        Ok(())
     }
 
     /// Load records from the JSONL file
@@ -207,6 +242,103 @@ impl MemoryStore {
             })
             .take(limit)
             .collect()
+    }
+
+    /// Hybrid search: keyword + vector similarity (if embeddings configured).
+    /// Falls back to pure keyword search when embeddings are not available.
+    pub async fn search_hybrid(
+        &self,
+        query: &str,
+        scope: &MemoryScope,
+        limit: usize,
+    ) -> Vec<MemorySearchResult> {
+        // 1. Keyword search (always available)
+        let keyword_results = self.index.search(query, scope, &self.records, limit * 2);
+        let keyword_scored: Vec<(String, f64)> = keyword_results
+            .iter()
+            .map(|r| (r.id.clone(), r.score))
+            .collect();
+
+        // 2. Vector search (if available)
+        let vector_scored = match (&self.vector_index, &self.embedding_provider) {
+            (Some(vi), Some(ep)) => {
+                match ep.embed(query).await {
+                    Ok(query_embedding) => vi.search(&query_embedding, limit * 2),
+                    Err(e) => {
+                        tracing::warn!("Embedding search failed, falling back to keyword: {}", e);
+                        vec![]
+                    }
+                }
+            }
+            _ => vec![],
+        };
+
+        if vector_scored.is_empty() {
+            // Pure keyword search
+            keyword_results.into_iter().take(limit).collect()
+        } else {
+            // Merge via reciprocal rank fusion
+            let merged = reciprocal_rank_fusion(&keyword_scored, &vector_scored, 60.0);
+
+            merged
+                .into_iter()
+                .take(limit)
+                .filter_map(|(id, rrf_score)| {
+                    let record = self.records.get(&id)?;
+                    if record.is_deleted() || !record.scope.matches(scope) {
+                        return None;
+                    }
+                    Some(MemorySearchResult {
+                        id,
+                        score: rrf_score,
+                        summary: record.summary.clone(),
+                        content_preview: record.content_preview(200),
+                        tags: record.tags.clone(),
+                        created_at: record.created_at,
+                        importance: record.importance,
+                    })
+                })
+                .collect()
+        }
+    }
+
+    /// Compute and store embeddings for records that don't have them yet.
+    /// Call periodically or after storing new records.
+    pub async fn embed_pending(&mut self) -> anyhow::Result<usize> {
+        let (vi, ep) = match (&mut self.vector_index, &self.embedding_provider) {
+            (Some(vi), Some(ep)) => (vi, ep),
+            _ => return Ok(0),
+        };
+
+        // Collect IDs of records without embeddings
+        let pending: Vec<(String, String)> = self
+            .records
+            .iter()
+            .filter(|(id, r)| !r.is_deleted() && !vi.has(id))
+            .map(|(id, r)| (id.clone(), r.content.clone()))
+            .collect();
+
+        if pending.is_empty() {
+            return Ok(0);
+        }
+
+        // Batch embed (max 100 at a time)
+        let mut total = 0;
+        for chunk in pending.chunks(100) {
+            let texts: Vec<&str> = chunk.iter().map(|(_, c)| c.as_str()).collect();
+            let embeddings = ep.embed_batch(&texts).await?;
+
+            for ((id, _), embedding) in chunk.iter().zip(embeddings) {
+                vi.add(id, embedding)?;
+            }
+            total += chunk.len();
+        }
+
+        // Persist vector index
+        vi.save()?;
+
+        tracing::info!("Embedded {} pending memory records", total);
+        Ok(total)
     }
 
     /// Get the number of non-deleted records

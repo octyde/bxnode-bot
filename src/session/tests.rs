@@ -536,3 +536,87 @@ fn test_transcript_entry_deserialization_assistant() {
         _ => panic!("Expected Assistant entry type"),
     }
 }
+
+#[tokio::test]
+async fn test_truncate_transcript() {
+    let temp_dir = TempDir::new().unwrap();
+    let manager = SessionManager::new(temp_dir.path().to_path_buf());
+    manager.ensure_base_dir().await.unwrap();
+
+    // Create a session
+    let session = Session {
+        id: "trunc-test".to_string(),
+        channel: "test".to_string(),
+        chat_id: "chat1".to_string(),
+        agent_id: "default".to_string(),
+        project: "default".to_string(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        title: None,
+        metadata: json!({}),
+    };
+    manager.create(&session).await.unwrap();
+
+    let base_time = Utc::now() - chrono::Duration::minutes(10);
+
+    // Append 10 old entries
+    for i in 0..10 {
+        let entry = TranscriptEntry {
+            timestamp: base_time + chrono::Duration::seconds(i),
+            entry_type: TranscriptEntryType::User {
+                user_id: "user1".to_string(),
+                content: format!("old message {}", i),
+            },
+        };
+        manager.append("default", "trunc-test", &entry).await.unwrap();
+    }
+
+    // Append 1 System entry (old, should be preserved)
+    let system_entry = TranscriptEntry {
+        timestamp: base_time + chrono::Duration::seconds(5),
+        entry_type: TranscriptEntryType::System {
+            message: "system note".to_string(),
+        },
+    };
+    manager.append("default", "trunc-test", &system_entry).await.unwrap();
+
+    // Append 3 new entries
+    let keep_after = Utc::now() - chrono::Duration::seconds(5);
+    for i in 0..3 {
+        let entry = TranscriptEntry {
+            timestamp: Utc::now(),
+            entry_type: TranscriptEntryType::User {
+                user_id: "user1".to_string(),
+                content: format!("new message {}", i),
+            },
+        };
+        manager.append("default", "trunc-test", &entry).await.unwrap();
+    }
+
+    // Total: 14 entries (10 old user + 1 old system + 3 new user)
+    let before = manager.load_transcript("default", "trunc-test").await.unwrap();
+    assert_eq!(before.len(), 14);
+
+    // Truncate: keep entries after keep_after + all System entries
+    let metrics = manager.truncate_transcript("default", "trunc-test", keep_after).await.unwrap();
+
+    assert_eq!(metrics.entries_removed, 10); // 10 old user entries removed
+    assert!(metrics.bytes_after < metrics.bytes_before);
+
+    // Verify remaining entries
+    let after = manager.load_transcript("default", "trunc-test").await.unwrap();
+    assert_eq!(after.len(), 4); // 1 system + 3 new
+
+    // Verify system entry is preserved
+    assert!(after.iter().any(|e| matches!(&e.entry_type, TranscriptEntryType::System { message } if message == "system note")));
+}
+
+#[tokio::test]
+async fn test_truncate_empty_transcript() {
+    let temp_dir = TempDir::new().unwrap();
+    let manager = SessionManager::new(temp_dir.path().to_path_buf());
+
+    let metrics = manager.truncate_transcript("default", "nonexistent", Utc::now()).await.unwrap();
+    assert_eq!(metrics.entries_removed, 0);
+    assert_eq!(metrics.bytes_before, 0);
+}

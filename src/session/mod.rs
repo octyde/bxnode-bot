@@ -93,6 +93,17 @@ pub enum TranscriptEntryType {
     },
 }
 
+/// Metrics returned from transcript truncation
+#[derive(Debug, Clone)]
+pub struct TruncationMetrics {
+    /// Number of entries removed
+    pub entries_removed: usize,
+    /// Transcript file size before truncation
+    pub bytes_before: u64,
+    /// Transcript file size after truncation
+    pub bytes_after: u64,
+}
+
 /// Session manager — handles persistent session storage organized by project
 pub struct SessionManager {
     /// Base directory for session storage
@@ -219,6 +230,80 @@ impl SessionManager {
             }
         }
         Ok(entries)
+    }
+
+    /// Truncate transcript by removing entries older than `keep_after`.
+    /// System entries are always preserved. Writes atomically via temp file + rename.
+    pub async fn truncate_transcript(
+        &self,
+        project: &str,
+        session_id: &str,
+        keep_after: DateTime<Utc>,
+    ) -> anyhow::Result<TruncationMetrics> {
+        use tokio::io::AsyncWriteExt;
+
+        let path = self.transcript_path(project, session_id);
+        if !path.exists() {
+            return Ok(TruncationMetrics {
+                entries_removed: 0,
+                bytes_before: 0,
+                bytes_after: 0,
+            });
+        }
+
+        let bytes_before = tokio::fs::metadata(&path).await?.len();
+        let entries = self.load_transcript(project, session_id).await?;
+        let total = entries.len();
+
+        // Keep entries that are:
+        // - Newer than or equal to keep_after, OR
+        // - System entries (always preserved)
+        let kept: Vec<&TranscriptEntry> = entries
+            .iter()
+            .filter(|e| {
+                e.timestamp >= keep_after
+                    || matches!(e.entry_type, TranscriptEntryType::System { .. })
+            })
+            .collect();
+
+        let entries_removed = total - kept.len();
+        if entries_removed == 0 {
+            return Ok(TruncationMetrics {
+                entries_removed: 0,
+                bytes_before,
+                bytes_after: bytes_before,
+            });
+        }
+
+        // Write kept entries to temp file, then atomic rename
+        let tmp_path = path.with_extension("jsonl.tmp");
+        let mut file = tokio::fs::File::create(&tmp_path).await?;
+
+        for entry in &kept {
+            let line = serde_json::to_string(entry)?;
+            file.write_all(line.as_bytes()).await?;
+            file.write_all(b"\n").await?;
+        }
+        file.flush().await?;
+        drop(file);
+
+        tokio::fs::rename(&tmp_path, &path).await?;
+        let bytes_after = tokio::fs::metadata(&path).await?.len();
+
+        tracing::info!(
+            "Truncated transcript {}/{}: removed {} entries ({} -> {} bytes)",
+            project,
+            session_id,
+            entries_removed,
+            bytes_before,
+            bytes_after,
+        );
+
+        Ok(TruncationMetrics {
+            entries_removed,
+            bytes_before,
+            bytes_after,
+        })
     }
 
     /// List all sessions across all projects

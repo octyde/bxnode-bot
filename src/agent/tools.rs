@@ -261,6 +261,18 @@ impl ToolRegistry {
         self.register(Box::new(super::diff_tool::DiffViewTool));
     }
 
+    /// Add image generation tool to an existing registry
+    pub fn add_image_tool(
+        &mut self,
+        config: super::image_tool::ImageGenConfig,
+        workspace_dir: std::path::PathBuf,
+    ) {
+        self.register(Box::new(super::image_tool::ImageGenerateTool::new(
+            config,
+            workspace_dir,
+        )));
+    }
+
     /// Add TTS tool to an existing registry
     pub fn add_tts_tool(
         &mut self,

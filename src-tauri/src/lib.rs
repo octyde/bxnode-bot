@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tokio::sync::RwLock;
 
+use bxnode_bot::apps::{AppDefinition, AppInfo, AppLoader};
 use bxnode_bot::config::Config;
 use bxnode_bot::memory::{MemoryRecord, MemoryScope, MemorySearchResult, MemoryStore};
 use bxnode_bot::providers::{CompletionRequest, Message, ProviderRegistry, Role};
@@ -16,6 +17,7 @@ use bxnode_bot::skills::{SkillInfo, SkillRegistry, SkillSyncer, SyncReport};
 /// Application state shared across Tauri commands
 pub struct AppState {
     pub skills: Arc<RwLock<Option<SkillRegistry>>>,
+    pub apps: Arc<RwLock<Vec<AppDefinition>>>,
     pub config: Arc<RwLock<Config>>,
     pub config_path: Arc<RwLock<Option<String>>>,
     pub memory: Arc<RwLock<Option<MemoryStore>>>,
@@ -29,6 +31,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             skills: Arc::new(RwLock::new(None)),
+            apps: Arc::new(RwLock::new(Vec::new())),
             config: Arc::new(RwLock::new(Config::default())),
             config_path: Arc::new(RwLock::new(None)),
             memory: Arc::new(RwLock::new(None)),
@@ -168,6 +171,71 @@ async fn init_skills(state: State<'_, AppState>) -> Result<SkillsConfigSummary, 
     *skills = Some(registry);
 
     Ok(summary)
+}
+
+/// Initialize apps by scanning app directories
+#[tauri::command]
+async fn init_apps(state: State<'_, AppState>) -> Result<Vec<AppInfo>, String> {
+    let config = state.config.read().await;
+
+    if !config.apps.enabled {
+        return Ok(vec![]);
+    }
+
+    let mut all_apps = Vec::new();
+
+    for dir in &config.apps.directories {
+        let expanded = expand_tilde(dir);
+        let path = std::path::Path::new(&expanded);
+
+        // For relative paths, try CWD and parent (CWD may be src-tauri/)
+        let candidates: Vec<std::path::PathBuf> = if path.is_absolute() {
+            vec![path.to_path_buf()]
+        } else {
+            vec![
+                path.to_path_buf(),                          // CWD
+                std::path::PathBuf::from("..").join(path),   // parent (if CWD is src-tauri/)
+            ]
+        };
+
+        for candidate in &candidates {
+            if candidate.exists() {
+                match AppLoader::scan_directory(candidate) {
+                    Ok(apps) => {
+                        all_apps.extend(apps);
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Failed to scan app directory {}: {}", candidate.display(), e);
+                    }
+                }
+            }
+        }
+    }
+
+    let info: Vec<AppInfo> = all_apps.iter().map(AppInfo::from).collect();
+
+    let mut apps = state.apps.write().await;
+    *apps = all_apps;
+
+    Ok(info)
+}
+
+/// List all loaded apps
+#[tauri::command]
+async fn list_apps(state: State<'_, AppState>) -> Result<Vec<AppInfo>, String> {
+    let apps = state.apps.read().await;
+    Ok(apps.iter().map(AppInfo::from).collect())
+}
+
+/// Get full app definition by name
+#[tauri::command]
+async fn get_app(name: String, state: State<'_, AppState>) -> Result<AppDefinition, String> {
+    let apps = state.apps.read().await;
+    apps.iter()
+        .find(|a| a.metadata.name == name)
+        .cloned()
+        .ok_or_else(|| format!("App '{}' not found", name))
 }
 
 /// List all skills
@@ -1807,6 +1875,10 @@ pub fn run() {
             sync_skills,
             get_skills_config,
             refresh_skills,
+            // Apps
+            init_apps,
+            list_apps,
+            get_app,
             load_config,
             // Providers
             list_providers,

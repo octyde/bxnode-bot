@@ -1,5 +1,7 @@
 //! Configuration module - YAML/JSON5 config loading and management
 
+pub mod secrets;
+
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -31,6 +33,10 @@ pub struct Config {
     /// Skills configurations (OpenClaw/Agent Skills)
     #[serde(default)]
     pub skills: SkillsConfig,
+
+    /// Apps configurations (App Store)
+    #[serde(default)]
+    pub apps: AppsConfig,
 
     /// Cron scheduler configuration
     #[serde(default)]
@@ -366,6 +372,10 @@ pub struct MemoryConfig {
     /// Default TTL for memories in days (0 = no expiry)
     #[serde(default = "default_ttl_days")]
     pub ttl_days: u32,
+
+    /// Optional embedding configuration for vector search
+    #[serde(default)]
+    pub embeddings: Option<EmbeddingsConfig>,
 }
 
 impl Default for MemoryConfig {
@@ -375,8 +385,25 @@ impl Default for MemoryConfig {
             store_path: default_memory_store(),
             max_results: default_max_results(),
             ttl_days: default_ttl_days(),
+            embeddings: None,
         }
     }
+}
+
+/// Embeddings configuration for vector-based memory search
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingsConfig {
+    /// Embedding provider: "openai"
+    pub provider: String,
+
+    /// API key for the embedding provider
+    pub api_key: String,
+
+    /// Model name (default: text-embedding-3-small for OpenAI)
+    pub model: Option<String>,
+
+    /// Base URL override
+    pub base_url: Option<String>,
 }
 
 /// Skills system configuration (OpenClaw/Agent Skills)
@@ -413,6 +440,34 @@ impl Default for SkillsConfig {
             sync_sources: Vec::new(),
         }
     }
+}
+
+/// Apps system configuration (App Store)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppsConfig {
+    /// Enable the apps system
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Directories to scan for apps
+    #[serde(default = "default_app_dirs")]
+    pub directories: Vec<String>,
+}
+
+impl Default for AppsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            directories: default_app_dirs(),
+        }
+    }
+}
+
+fn default_app_dirs() -> Vec<String> {
+    vec![
+        "~/.bxnode/apps".to_string(),
+        "./apps".to_string(),
+    ]
 }
 
 /// Workspace configuration for coding projects
@@ -456,6 +511,10 @@ pub struct ToolsConfig {
     /// TTS tool configuration
     #[serde(default)]
     pub tts: Option<TtsToolConfig>,
+
+    /// Image generation tool configuration
+    #[serde(default)]
+    pub image_generation: Option<ImageGenerationConfig>,
 }
 
 /// Web tools configuration (search + fetch)
@@ -480,6 +539,16 @@ pub struct WebSearchConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TtsToolConfig {
     /// API key for TTS provider
+    pub api_key: String,
+
+    /// Base URL (default: OpenAI)
+    pub base_url: Option<String>,
+}
+
+/// Image generation tool configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageGenerationConfig {
+    /// API key for image generation provider
     pub api_key: String,
 
     /// Base URL (default: OpenAI)
@@ -605,12 +674,17 @@ impl Config {
         let path = path.as_ref();
         let content = std::fs::read_to_string(path)?;
 
-        let config = if path.extension().map_or(false, |ext| ext == "json5") {
+        // Two-pass load: parse to Value, resolve secret refs, then deserialize to Config
+        let mut raw: serde_json::Value = if path.extension().map_or(false, |ext| ext == "json5") {
             json5::from_str(&content)?
         } else {
             serde_yaml::from_str(&content)?
         };
 
+        // Resolve ${env:...}, ${file:...}, ${exec:...} references
+        secrets::resolve_all(&mut raw)?;
+
+        let config: Config = serde_json::from_value(raw)?;
         Ok(config)
     }
 

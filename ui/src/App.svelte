@@ -6,6 +6,7 @@
   import { skillsStore } from "$lib/stores/skills.svelte";
   import { configStore } from "$lib/stores/config.svelte";
   import { serverStore } from "$lib/stores/server.svelte";
+  import { appsStore } from "$lib/stores/apps.svelte";
 
   import Dashboard from "./routes/Dashboard.svelte";
   import Skills from "./routes/Skills.svelte";
@@ -15,6 +16,7 @@
   import Cron from "./routes/Cron.svelte";
   import Memory from "./routes/Memory.svelte";
   import Chat from "./routes/Chat.svelte";
+  import Apps from "./routes/Apps.svelte";
   import Settings from "./routes/Settings.svelte";
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -27,6 +29,7 @@
     cron: Cron,
     memory: Memory,
     chat: Chat,
+    apps: Apps,
     settings: Settings,
   };
 
@@ -41,9 +44,11 @@
       console.error("Failed to load config:", e);
       // Continue even if config loading fails
     }
+    appsStore.loadFromLocalStorage();
     await Promise.all([
       skillsStore.init(),
       configStore.refresh(),
+      appsStore.init(),
     ]);
     // Auto-detect an externally running server (e.g., started from CLI)
     await serverStore.refresh();

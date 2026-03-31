@@ -33,6 +33,7 @@
 //! let results = store.search("important", &scope, 5);
 //! ```
 
+pub mod embeddings;
 pub mod search;
 pub mod store;
 

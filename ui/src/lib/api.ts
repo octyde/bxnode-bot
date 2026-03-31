@@ -12,6 +12,8 @@ import type {
   MemorySearchResult,
   MemoryStats,
   AppConfig,
+  AppInfo,
+  AppDefinition,
 } from "./types";
 
 // ── Skills ──────────────────────────────────────────────────────
@@ -151,6 +153,17 @@ export const sendMessage = (message: string, model: string) =>
 
 export const listModels = () =>
   invoke<string[]>("list_models");
+
+// ── Apps ────────────────────────────────────────────────────────
+
+export const initApps = () =>
+  invoke<AppInfo[]>("init_apps");
+
+export const listApps = () =>
+  invoke<AppInfo[]>("list_apps");
+
+export const getApp = (name: string) =>
+  invoke<AppDefinition>("get_app", { name });
 
 // ── Server ───────────────────────────────────────────────────
 

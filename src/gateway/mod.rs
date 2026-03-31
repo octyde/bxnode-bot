@@ -1267,6 +1267,15 @@ async fn handle_slash_command(
         ),
         "version" => format!("BXNode Bot v{}", env!("CARGO_PKG_VERSION")),
 
+        // ── BTW side question ───────────────────────────────────
+        "btw" => {
+            if args.is_empty() {
+                "Usage: /btw <your question>\n\nAsk a quick side question without affecting the conversation history.".to_string()
+            } else {
+                handle_btw_side_question(providers, model, contexts, &context_key, args).await
+            }
+        }
+
         // ── Session commands ────────────────────────────────────
         "sessions" => {
             generate_sessions_list(sessions, active_sessions, &msg.channel, &msg.chat_id).await
@@ -1351,6 +1360,68 @@ async fn handle_slash_command(
     Ok(())
 }
 
+/// Handle a /btw side question — ephemeral LLM call that doesn't pollute session history.
+async fn handle_btw_side_question(
+    providers: &Arc<ProviderRegistry>,
+    model: &str,
+    contexts: &Arc<RwLock<HashMap<String, AgentContext>>>,
+    context_key: &str,
+    question: &str,
+) -> String {
+    use crate::providers::{CompletionRequest, Message, Role};
+
+    // 1. Snapshot recent context (read-only, last 5 messages max)
+    let recent_messages = {
+        let contexts_read = contexts.read().await;
+        match contexts_read.get(context_key) {
+            Some(ctx) => {
+                let all = ctx.messages_for_provider();
+                let start = if all.len() > 5 { all.len() - 5 } else { 0 };
+                all[start..].to_vec()
+            }
+            None => vec![],
+        }
+    };
+
+    // 2. Build ephemeral messages with side-question system prompt
+    let mut messages = vec![Message {
+        role: Role::System,
+        content: "You are answering a brief /btw side question about the current conversation. \
+                  Use the conversation only as background context. \
+                  Answer only the side question in the last user message. \
+                  Do not continue, resume, or complete any unfinished task from the conversation. \
+                  Be concise."
+            .to_string(),
+    }];
+    messages.extend(recent_messages);
+    messages.push(Message {
+        role: Role::User,
+        content: format!("[Side question] {}", question),
+    });
+
+    // 3. Resolve provider and call LLM without tools
+    let provider = match providers.get_for_model(model) {
+        Some(p) => p,
+        None => return format!("No provider found for model '{}'", model),
+    };
+
+    let model_name = providers.extract_model_name(model);
+    let request = CompletionRequest {
+        model: model_name,
+        messages,
+        temperature: Some(0.3),
+        max_tokens: Some(1024),
+        tools: vec![],
+        stream: false,
+        stop: vec![],
+    };
+
+    match provider.complete(request).await {
+        Ok(response) => response.content,
+        Err(e) => format!("Failed to answer side question: {}", e),
+    }
+}
+
 /// Generate help text listing available commands
 async fn generate_help_text(skills: &Option<Arc<RwLock<SkillRegistry>>>) -> String {
     let mut help = String::from("Available commands:\n\n");
@@ -1361,6 +1432,7 @@ async fn generate_help_text(skills: &Option<Arc<RwLock<SkillRegistry>>>) -> Stri
     help.push_str("/id - Show chat and user IDs\n");
     help.push_str("/ping - Check if bot is alive\n");
     help.push_str("/version - Show bot version\n");
+    help.push_str("/btw <question> - Quick side question (doesn't affect history)\n");
     help.push_str("\nSession commands:\n");
     help.push_str("/sessions - List sessions for this chat\n");
     help.push_str("/newsession - Start a new session\n");

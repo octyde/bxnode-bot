@@ -200,6 +200,7 @@ fn test_config_serialization_roundtrip() {
         providers: ProvidersConfig::default(),
         plugins: PluginsConfig::default(),
         skills: SkillsConfig::default(),
+        apps: AppsConfig::default(),
         cron: CronConfig::default(),
         memory: MemoryConfig::default(),
         workspace: WorkspaceConfig::default(),

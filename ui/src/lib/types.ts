@@ -187,4 +187,92 @@ export type Route =
   | "cron"
   | "memory"
   | "chat"
+  | "apps"
   | "settings";
+
+// ── Apps ────────────────────────────────────────────────────────
+
+export interface AppManifest {
+  id: string;
+  name: string;
+  description: string;
+  author: string;
+  version: string;
+  category: string;
+  icon?: string;
+}
+
+export interface InstalledApp {
+  id: string;
+  installedAt: number;
+}
+
+export interface SelectOption {
+  label: string;
+  value: string;
+}
+
+export interface AppInput {
+  name: string;
+  input_type: string;
+  label?: string;
+  default?: string;
+  placeholder?: string;
+  min?: number;
+  max?: number;
+  options: SelectOption[];
+}
+
+export interface MetaField {
+  label: string;
+  field: string;
+}
+
+export interface OutputFields {
+  title?: string;
+  body?: string;
+  subtitle?: string;
+  badge?: string;
+  footer_left?: string;
+  footer_right?: string;
+  tags?: string;
+  meta: MetaField[];
+}
+
+export interface AppPhase {
+  name: string;
+  label?: string;
+  button?: string;
+  prompt?: string;
+  output?: string;
+  output_fields?: OutputFields;
+  selectable?: boolean;
+  select_prompt?: string;
+  requires_notes?: boolean;
+}
+
+export interface AppDefinition {
+  metadata: AppMetadata;
+  source_path: string;
+  inputs: AppInput[];
+  phases: AppPhase[];
+}
+
+export interface AppMetadata {
+  name: string;
+  description: string;
+  author?: string;
+  version?: string;
+  category?: string;
+  icon?: string;
+}
+
+export interface AppInfo {
+  name: string;
+  description: string;
+  author?: string;
+  version?: string;
+  category?: string;
+  icon?: string;
+  source_path: string;
+}
