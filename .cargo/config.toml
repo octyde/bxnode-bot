@@ -1,0 +1,9 @@
+# Statically link the MSVC C runtime into Windows binaries. Without
+# this the exes import VCRUNTIME140.dll, which only exists on machines
+# that happen to have the VC++ Redistributable installed — on a clean
+# Windows box they fail to launch with "VCRUNTIME140.dll was not
+# found". The UCRT (api-ms-win-crt-*) ships with Windows 10+ and
+# cc-built C deps follow this flag (/MT), so with crt-static every
+# remaining import is an OS-shipped DLL.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
