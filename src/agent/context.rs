@@ -172,12 +172,63 @@ impl AgentContext {
             .saturating_sub(self.config.response_reserve)
     }
 
-    /// Truncate oldest messages to fit within limits.
-    /// Returns the number of messages removed.
+    /// Truncate oldest messages to fit within limits, **without ever breaking a
+    /// tool round**. Returns the number of messages removed.
+    ///
+    /// A tool round is an assistant message carrying `tool_calls` followed by
+    /// one `tool` message per call. Removing only part of a round (e.g. the
+    /// assistant while keeping a `tool`, or vice-versa) produces a message
+    /// sequence the provider rejects as illegal ("messages parameter is
+    /// illegal"). So truncation drops messages from the front in *round-aware*
+    /// steps: a leading `tool` message can never be the new head (it would be an
+    /// orphan), and removing an assistant-with-tool_calls also removes its
+    /// trailing `tool` results in the same step.
     pub fn truncate_to_fit(&mut self) -> usize {
         let mut removed = 0;
         while !self.within_limits() && !self.messages.is_empty() {
+            // How many messages does the leading unit span?
+            let head = &self.messages[0];
+            let span = if head.role == Role::Assistant && !head.tool_calls.is_empty() {
+                // Assistant(tool_calls) + its contiguous tool results.
+                let mut n = 1;
+                while n < self.messages.len() && self.messages[n].role == Role::Tool {
+                    n += 1;
+                }
+                n
+            } else {
+                // A plain message — or a *leading* orphan tool message (e.g.
+                // because a prior step removed its assistant): drop the whole
+                // run of leading tool messages so the head is never an orphan.
+                if head.role == Role::Tool {
+                    let mut n = 1;
+                    while n < self.messages.len() && self.messages[n].role == Role::Tool {
+                        n += 1;
+                    }
+                    n
+                } else {
+                    1
+                }
+            };
+            self.messages.drain(0..span);
+            removed += span;
+        }
+        // Final guard: a tool round must never be left dangling at either end.
+        // If the head is now an orphan tool message, or the tail is an
+        // assistant(tool_calls) with missing results, drop the offending edge.
+        while self
+            .messages
+            .first()
+            .is_some_and(|m| m.role == Role::Tool)
+        {
             self.messages.remove(0);
+            removed += 1;
+        }
+        while self
+            .messages
+            .last()
+            .is_some_and(|m| m.role == Role::Assistant && !m.tool_calls.is_empty())
+        {
+            self.messages.pop();
             removed += 1;
         }
         removed
@@ -331,6 +382,47 @@ mod tests {
         ctx.truncate_to_fit();
 
         assert!(ctx.message_count() < original_count);
+        assert!(ctx.within_limits());
+    }
+
+    #[test]
+    fn test_truncate_never_orphans_a_tool_round() {
+        use crate::providers::ToolCallResponse;
+        // Tiny budget so truncation is forced.
+        let config = ContextConfig {
+            max_tokens: 200,
+            response_reserve: 20,
+            count_system_prompt: true,
+        };
+        let mut ctx = AgentContext::new(config);
+        ctx.set_system_prompt("sys");
+
+        // A tool round: assistant(2 tool_calls) + 2 tool results, where the
+        // FIRST tool result is enormous (forces truncation), like a recursive
+        // list_directory dump.
+        ctx.messages.push(Message::assistant_tool_calls(
+            "",
+            vec![
+                ToolCallResponse { id: "a".into(), name: "x".into(), arguments: serde_json::json!({}) },
+                ToolCallResponse { id: "b".into(), name: "y".into(), arguments: serde_json::json!({}) },
+            ],
+        ));
+        ctx.messages.push(Message::tool_result("a", "Z".repeat(4000)));
+        ctx.messages.push(Message::tool_result("b", "small"));
+
+        ctx.truncate_to_fit();
+
+        // After truncation the array must NOT begin with an orphan tool message
+        // nor end with an assistant(tool_calls) lacking its results.
+        if let Some(first) = ctx.messages().first() {
+            assert_ne!(first.role, Role::Tool, "head must not be an orphan tool message");
+        }
+        if let Some(last) = ctx.messages().last() {
+            assert!(
+                !(last.role == Role::Assistant && !last.tool_calls.is_empty()),
+                "tail must not be an assistant(tool_calls) without its results"
+            );
+        }
         assert!(ctx.within_limits());
     }
 

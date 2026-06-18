@@ -62,10 +62,21 @@ fn is_valid_tool_name(name: &str) -> bool {
 // Security: Control character filtering
 // ============================================================================
 
+/// Maximum characters kept from a single tool result before truncation.
+///
+/// One oversized result (e.g. a recursive `list_directory` of a build tree)
+/// can otherwise blow the whole context-token budget, forcing the context
+/// engine to drop earlier messages — which previously orphaned a tool round
+/// and made the provider reject the next request as "messages parameter is
+/// illegal". ~24K chars ≈ 6K tokens: large enough to be useful, small enough
+/// that several results still fit comfortably.
+pub const MAX_TOOL_OUTPUT_CHARS: usize = 24_000;
+
 /// Strip C0 (0x00-0x1F except \n \r \t) and C1 (0x80-0x9F) control characters
-/// from tool result content to prevent injection attacks.
+/// from tool result content to prevent injection attacks, then cap the length
+/// so one giant result can't exhaust the context budget.
 pub fn sanitize_tool_output(input: &str) -> String {
-    input
+    let cleaned: String = input
         .chars()
         .filter(|&c| {
             if c == '\n' || c == '\r' || c == '\t' {
@@ -78,7 +89,28 @@ pub fn sanitize_tool_output(input: &str) -> String {
                 true
             }
         })
-        .collect()
+        .collect();
+    truncate_tool_output(&cleaned, MAX_TOOL_OUTPUT_CHARS)
+}
+
+/// Cap a tool result to `max` chars, keeping a head and tail with a clear
+/// elision marker in the middle (so structure at both ends survives).
+fn truncate_tool_output(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let total = chars.len();
+    // Keep ~70% head, ~30% tail (head is usually the more useful context).
+    let head = (max * 7) / 10;
+    let tail = max.saturating_sub(head);
+    let head_s: String = chars[..head].iter().collect();
+    let tail_s: String = chars[total - tail..].iter().collect();
+    format!(
+        "{head_s}\n\n…[truncated {} of {} chars]…\n\n{tail_s}",
+        total - max,
+        total
+    )
 }
 
 /// Tool definition for LLM consumption
@@ -1079,6 +1111,18 @@ mod tests {
             sanitize_tool_output("before\u{0080}after"),
             "beforeafter"
         );
+    }
+
+    #[test]
+    fn test_sanitize_tool_output_caps_giant_results() {
+        // A huge result (e.g. recursive list_directory) is capped so it can't
+        // blow the context budget and orphan a tool round.
+        let huge = "x".repeat(MAX_TOOL_OUTPUT_CHARS * 3);
+        let out = sanitize_tool_output(&huge);
+        assert!(out.chars().count() < MAX_TOOL_OUTPUT_CHARS + 200);
+        assert!(out.contains("truncated"));
+        // A small result is untouched.
+        assert_eq!(sanitize_tool_output("small output"), "small output");
     }
 
     #[test]

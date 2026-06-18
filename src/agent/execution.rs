@@ -234,6 +234,12 @@ impl AgentExecutor {
             // Compact context via engine
             let compaction = self.context_engine.compact(context).await;
             total_compacted += compaction.messages_removed;
+            if compaction.messages_removed > 0 {
+                eprintln!(
+                    "[agent] iter {iteration} compaction removed {} message(s) to fit the token budget",
+                    compaction.messages_removed
+                );
+            }
 
             // Assemble messages via engine
             let turn = TurnInfo {
