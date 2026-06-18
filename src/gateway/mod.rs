@@ -1387,20 +1387,20 @@ async fn handle_btw_side_question(
     };
 
     // 2. Build ephemeral messages with side-question system prompt
-    let mut messages = vec![Message {
-        role: Role::System,
-        content: "You are answering a brief /btw side question about the current conversation. \
+    let mut messages = vec![Message::text(
+        Role::System,
+        "You are answering a brief /btw side question about the current conversation. \
                   Use the conversation only as background context. \
                   Answer only the side question in the last user message. \
                   Do not continue, resume, or complete any unfinished task from the conversation. \
                   Be concise."
             .to_string(),
-    }];
+    )];
     messages.extend(recent_messages);
-    messages.push(Message {
-        role: Role::User,
-        content: format!("[Side question] {}", question),
-    });
+    messages.push(Message::text(
+        Role::User,
+        format!("[Side question] {}", question),
+    ));
 
     // 3. Resolve provider and call LLM without tools
     let provider = match providers.get_for_model(model) {

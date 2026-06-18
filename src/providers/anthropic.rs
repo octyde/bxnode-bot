@@ -47,6 +47,7 @@ impl AnthropicProvider {
             Role::User => "user",
             Role::Assistant => "assistant",
             Role::System => "user", // System messages handled separately
+            Role::Tool => "user",   // Anthropic tool results are user-role blocks
         }
     }
 

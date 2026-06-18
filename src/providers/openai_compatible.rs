@@ -10,7 +10,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CompletionRequest, CompletionResponse, FinishReason, ModelInfo, Provider, Role,
+    CompletionRequest, CompletionResponse, FinishReason, Message, ModelInfo, Provider, Role,
     ToolCallResponse, Usage,
 };
 
@@ -70,7 +70,43 @@ impl OpenAICompatibleProvider {
             Role::System => "system",
             Role::User => "user",
             Role::Assistant => "assistant",
+            Role::Tool => "tool",
         }
+    }
+
+    /// Serialize one message into the OpenAI/Z.AI wire shape, including tool
+    /// structure: an assistant message carries `tool_calls`, a tool message
+    /// carries `tool_call_id`. Emitting these correctly is what keeps a tool
+    /// round's message sequence valid (otherwise Z.AI rejects it as illegal).
+    fn message_to_json(msg: &Message) -> serde_json::Value {
+        let mut obj = serde_json::Map::new();
+        obj.insert("role".into(), Self::convert_role(msg.role).into());
+        // `content` must be present (use "" rather than null for a pure
+        // tool-call assistant turn — Z.AI rejects a missing content key).
+        obj.insert("content".into(), msg.content.clone().into());
+        if !msg.tool_calls.is_empty() {
+            let calls: Vec<serde_json::Value> = msg
+                .tool_calls
+                .iter()
+                .map(|tc| {
+                    serde_json::json!({
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            // OpenAI wants arguments as a JSON *string*.
+                            "arguments": serde_json::to_string(&tc.arguments)
+                                .unwrap_or_else(|_| "{}".to_string()),
+                        }
+                    })
+                })
+                .collect();
+            obj.insert("tool_calls".into(), serde_json::Value::Array(calls));
+        }
+        if let Some(id) = &msg.tool_call_id {
+            obj.insert("tool_call_id".into(), id.clone().into());
+        }
+        serde_json::Value::Object(obj)
     }
 
     /// Convert OpenAI finish reason to our FinishReason
@@ -249,12 +285,7 @@ impl Provider for OpenAICompatibleProvider {
         let messages: Vec<serde_json::Value> = request
             .messages
             .into_iter()
-            .map(|msg| {
-                serde_json::json!({
-                    "role": Self::convert_role(msg.role),
-                    "content": msg.content,
-                })
-            })
+            .map(|msg| Self::message_to_json(&msg))
             .collect();
 
         // Convert tool definitions to OpenAI format
@@ -374,12 +405,7 @@ impl Provider for OpenAICompatibleProvider {
         let messages: Vec<serde_json::Value> = request
             .messages
             .into_iter()
-            .map(|msg| {
-                serde_json::json!({
-                    "role": Self::convert_role(msg.role),
-                    "content": msg.content,
-                })
-            })
+            .map(|msg| Self::message_to_json(&msg))
             .collect();
 
         // Convert tool definitions to OpenAI format

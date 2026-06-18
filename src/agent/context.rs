@@ -69,26 +69,35 @@ impl AgentContext {
 
     /// Add a user message
     pub fn add_user_message(&mut self, content: impl Into<String>) {
-        self.messages.push(Message {
-            role: Role::User,
-            content: content.into(),
-        });
+        self.messages.push(Message::text(Role::User, content));
     }
 
     /// Add an assistant message
     pub fn add_assistant_message(&mut self, content: impl Into<String>) {
-        self.messages.push(Message {
-            role: Role::Assistant,
-            content: content.into(),
-        });
+        self.messages.push(Message::text(Role::Assistant, content));
     }
 
     /// Add a message with specified role
     pub fn add_message(&mut self, role: Role, content: impl Into<String>) {
-        self.messages.push(Message {
-            role,
-            content: content.into(),
-        });
+        self.messages.push(Message::text(role, content));
+    }
+
+    /// Add an assistant message that made tool calls (content may be empty).
+    /// Pairs with [`add_tool_result`](Self::add_tool_result) to form a valid
+    /// OpenAI/Z.AI tool round.
+    pub fn add_assistant_tool_calls(
+        &mut self,
+        content: impl Into<String>,
+        tool_calls: Vec<crate::providers::ToolCallResponse>,
+    ) {
+        self.messages
+            .push(Message::assistant_tool_calls(content, tool_calls));
+    }
+
+    /// Add a tool-result message answering `tool_call_id`.
+    pub fn add_tool_result(&mut self, tool_call_id: impl Into<String>, content: impl Into<String>) {
+        self.messages
+            .push(Message::tool_result(tool_call_id, content));
     }
 
     /// Get all messages (without system prompt)
@@ -101,10 +110,7 @@ impl AgentContext {
         let mut result = Vec::with_capacity(self.messages.len() + 1);
 
         if let Some(ref system) = self.system_prompt {
-            result.push(Message {
-                role: Role::System,
-                content: system.clone(),
-            });
+            result.push(Message::text(Role::System, system.clone()));
         }
 
         result.extend(self.messages.clone());

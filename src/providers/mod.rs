@@ -22,11 +22,56 @@ use async_trait::async_trait;
 use futures_util::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 
-/// Chat message for provider requests
+/// Chat message for provider requests.
+///
+/// Beyond plain `role` + `content`, a message can carry tool-calling structure:
+/// an **assistant** message may include `tool_calls` (the calls the model made),
+/// and a **tool** message carries `tool_call_id` (which call it answers). This
+/// is what lets the OpenAI/Z.AI message sequence stay valid across a tool round
+/// (assistant-with-tool_calls → tool results → assistant), instead of jamming
+/// results into a fake user message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub content: String,
+    /// Tool calls this assistant message made (empty for non-tool turns).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCallResponse>,
+    /// The id of the tool call this `Tool`-role message answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+impl Message {
+    /// A plain text message (no tool structure).
+    pub fn text(role: Role, content: impl Into<String>) -> Self {
+        Self {
+            role,
+            content: content.into(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }
+    }
+
+    /// An assistant message that made `tool_calls` (content may be empty).
+    pub fn assistant_tool_calls(content: impl Into<String>, tool_calls: Vec<ToolCallResponse>) -> Self {
+        Self {
+            role: Role::Assistant,
+            content: content.into(),
+            tool_calls,
+            tool_call_id: None,
+        }
+    }
+
+    /// A tool-result message answering the call `tool_call_id`.
+    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: Role::Tool,
+            content: content.into(),
+            tool_calls: Vec::new(),
+            tool_call_id: Some(tool_call_id.into()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +80,8 @@ pub enum Role {
     System,
     User,
     Assistant,
+    /// A tool-result message (carries `tool_call_id`).
+    Tool,
 }
 
 /// Tool definition for provider requests (matches OpenAI function calling format)

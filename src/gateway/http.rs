@@ -193,14 +193,14 @@ pub async fn chat_completions(
     let messages: Vec<Message> = request
         .messages
         .iter()
-        .map(|m| Message {
-            role: match m.role.as_str() {
+        .map(|m| {
+            let role = match m.role.as_str() {
                 "system" => Role::System,
                 "user" => Role::User,
                 "assistant" => Role::Assistant,
                 _ => Role::User,
-            },
-            content: m.content.clone(),
+            };
+            Message::text(role, m.content.clone())
         })
         .collect();
 

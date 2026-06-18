@@ -122,14 +122,8 @@ impl SkillExtractor {
         let request = CompletionRequest {
             model: model_name.clone(),
             messages: vec![
-                Message {
-                    role: Role::System,
-                    content: system_prompt.to_string(),
-                },
-                Message {
-                    role: Role::User,
-                    content: user_prompt,
-                },
+                Message::text(Role::System, system_prompt.to_string()),
+                Message::text(Role::User, user_prompt),
             ],
             temperature: Some(self.config.temperature),
             max_tokens: Some(self.config.max_tokens),
