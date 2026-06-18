@@ -75,6 +75,7 @@ pub mod diff_tool;
 pub mod execution;
 pub mod image_tool;
 pub mod pdf_tool;
+pub mod tool_policy;
 pub mod tools;
 pub mod tts_tool;
 pub mod web_tools;
@@ -85,6 +86,9 @@ mod tools_tests;
 // Re-export public API
 pub use context::{AgentContext, ContextConfig};
 pub use execution::{AgentEvent, AgentExecutor, ExecutionResult, ExecutionUsage};
+pub use tool_policy::{
+    ToolMetadata, ToolPermissionDecision, ToolPermissionMode, ToolPolicy, ToolRisk,
+};
 pub use tools::{Tool, ToolCall, ToolDefinition, ToolRegistry, ToolResult};
 
 /// Agent configuration

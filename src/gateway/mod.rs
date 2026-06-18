@@ -1098,6 +1098,9 @@ async fn process_channel_message(
                 memory_scope,
                 proj.workspace_dir.clone(),
                 proj.shell_enabled,
+                // Permissive default policy (preserves prior behavior); a
+                // project-derived policy can be threaded here later.
+                crate::agent::ToolPolicy::default(),
             ))
         } else {
             Arc::new(ToolRegistry::with_memory(memory.clone(), memory_scope))
@@ -2794,6 +2797,7 @@ pub async fn process_api_message(
         scope,
         workspace_dir,
         state.config.workspace.shell_enabled,
+        crate::agent::ToolPolicy::default(),
     ));
 
     let agent_config = AgentConfig {

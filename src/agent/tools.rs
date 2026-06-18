@@ -156,6 +156,14 @@ pub trait Tool: Send + Sync {
     /// Input schema (JSON Schema format)
     fn input_schema(&self) -> serde_json::Value;
 
+    /// Safety/exposure metadata used by [`ToolPolicy`](super::tool_policy::ToolPolicy)
+    /// to decide whether the tool is shown to the model and how its results are
+    /// handled. Defaults to a mutating, exposed-by-default tool; read-only and
+    /// destructive tools override this.
+    fn metadata(&self) -> super::tool_policy::ToolMetadata {
+        super::tool_policy::ToolMetadata::default()
+    }
+
     /// Execute the tool with given input
     async fn execute(&self, input: serde_json::Value) -> anyhow::Result<String>;
 
@@ -173,6 +181,9 @@ pub trait Tool: Send + Sync {
 #[derive(Default)]
 pub struct ToolRegistry {
     tools: std::collections::HashMap<String, Box<dyn Tool>>,
+    /// Exposure/execution policy. Default permits everything (back-compat);
+    /// `with_coding_tools` and callers can set a stricter policy.
+    policy: super::tool_policy::ToolPolicy,
 }
 
 impl ToolRegistry {
@@ -203,6 +214,7 @@ impl ToolRegistry {
         scope: MemoryScope,
         workspace_dir: std::path::PathBuf,
         shell_enabled: bool,
+        policy: super::tool_policy::ToolPolicy,
     ) -> Self {
         use super::coding_tools;
         let mut registry = Self::with_memory(memory, scope);
@@ -220,6 +232,7 @@ impl ToolRegistry {
         if shell_enabled {
             registry.register(Box::new(coding_tools::ShellExecTool::new(workspace_dir)));
         }
+        registry.set_policy(policy);
         registry
     }
 
@@ -295,6 +308,17 @@ impl ToolRegistry {
         self.tools.remove(name)
     }
 
+    /// Set the exposure/execution policy applied by [`list`](Self::list) and
+    /// [`execute`](Self::execute).
+    pub fn set_policy(&mut self, policy: super::tool_policy::ToolPolicy) {
+        self.policy = policy;
+    }
+
+    /// The active tool policy.
+    pub fn policy(&self) -> &super::tool_policy::ToolPolicy {
+        &self.policy
+    }
+
     /// Get a tool by name
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
         self.tools.get(name).map(|t| t.as_ref())
@@ -305,12 +329,20 @@ impl ToolRegistry {
         self.tools.contains_key(name)
     }
 
-    /// List all registered tools
+    /// List all registered tools that the active policy exposes to the model.
+    /// Policy-denied / hidden tools are filtered out here, before definitions
+    /// reach the provider (plan Phase 2 §4: pre-exposure filtering).
     pub fn list(&self) -> Vec<ToolDefinition> {
         self.tools
             .values()
+            .filter(|t| self.policy.allows_definition(t.as_ref()))
             .map(|t| t.definition())
             .collect()
+    }
+
+    /// All registered tools' definitions, ignoring policy (diagnostics/tests).
+    pub fn list_unfiltered(&self) -> Vec<ToolDefinition> {
+        self.tools.values().map(|t| t.definition()).collect()
     }
 
     /// Get tool names
@@ -332,13 +364,25 @@ impl ToolRegistry {
         }
 
         match self.get(&call.name) {
-            Some(tool) => match tool.execute(call.input.clone()).await {
-                Ok(content) => {
-                    // Security: sanitize output to strip control characters
-                    ToolResult::success(&call.id, sanitize_tool_output(&content))
+            Some(tool) => {
+                // Policy check before execution (plan Phase 2 §5): a denied tool
+                // never runs, with a user-visible reason.
+                use super::tool_policy::ToolPermissionMode;
+                let decision = self.policy.decision_for(tool);
+                if decision.mode == ToolPermissionMode::Deny {
+                    let reason = decision
+                        .reason
+                        .unwrap_or_else(|| format!("Tool '{}' is blocked by policy.", call.name));
+                    return ToolResult::error(&call.id, reason);
                 }
-                Err(e) => ToolResult::error(&call.id, sanitize_tool_output(&e.to_string())),
-            },
+                match tool.execute(call.input.clone()).await {
+                    Ok(content) => {
+                        // Security: sanitize output to strip control characters
+                        ToolResult::success(&call.id, sanitize_tool_output(&content))
+                    }
+                    Err(e) => ToolResult::error(&call.id, sanitize_tool_output(&e.to_string())),
+                }
+            }
             None => ToolResult::error(&call.id, format!("Tool not found: {}", call.name)),
         }
     }
@@ -632,6 +676,10 @@ impl Tool for MemoryRecallTool {
         "memory_recall"
     }
 
+    fn metadata(&self) -> super::tool_policy::ToolMetadata {
+        super::tool_policy::ToolMetadata::read_only()
+    }
+
     fn description(&self) -> &str {
         "Search long-term memory for relevant information. Returns memories matching the query, ranked by relevance."
     }
@@ -842,6 +890,42 @@ mod tests {
         assert_eq!(result.tool_call_id, "call-456");
         assert!(result.content.is_empty());
         assert_eq!(result.error, Some("Something went wrong".to_string()));
+    }
+
+    #[test]
+    fn policy_filters_definitions_and_blocks_execution() {
+        // The recovered ToolPolicy wiring: a denied tool is hidden from list()
+        // and refused at execute().
+        let mut reg = ToolRegistry::with_builtins(); // echo + current_time
+        assert!(reg.list().iter().any(|d| d.name == "echo"));
+        reg.set_policy(super::super::tool_policy::ToolPolicy::default().with_denied_tools(vec![
+            "echo".to_string(),
+        ]));
+        // Hidden from the model.
+        assert!(
+            !reg.list().iter().any(|d| d.name == "echo"),
+            "denied tool must be filtered from definitions"
+        );
+        assert!(
+            reg.list().iter().any(|d| d.name == "current_time"),
+            "other tools remain exposed"
+        );
+        // Refused at execution.
+        let res = futures_executor_block(reg.execute(&ToolCall {
+            id: "c1".into(),
+            name: "echo".into(),
+            input: serde_json::json!({"text":"hi"}),
+        }));
+        assert!(!res.success, "denied tool must not execute");
+    }
+
+    /// Tiny blocking shim so the sync test can drive the async `execute`.
+    fn futures_executor_block<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(f)
     }
 
     #[test]

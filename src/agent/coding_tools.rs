@@ -124,6 +124,10 @@ impl Tool for FileReadTool {
         "file_read"
     }
 
+    fn metadata(&self) -> super::tool_policy::ToolMetadata {
+        super::tool_policy::ToolMetadata::read_only()
+    }
+
     fn description(&self) -> &str {
         "Read the contents of a file in the project workspace. Supports optional line range."
     }
@@ -380,6 +384,10 @@ impl Tool for FileDeleteTool {
         "file_delete"
     }
 
+    fn metadata(&self) -> super::tool_policy::ToolMetadata {
+        super::tool_policy::ToolMetadata::destructive()
+    }
+
     fn description(&self) -> &str {
         "Delete a file from the project workspace."
     }
@@ -436,6 +444,10 @@ impl ListDirectoryTool {
 impl Tool for ListDirectoryTool {
     fn name(&self) -> &str {
         "list_directory"
+    }
+
+    fn metadata(&self) -> super::tool_policy::ToolMetadata {
+        super::tool_policy::ToolMetadata::read_only()
     }
 
     fn description(&self) -> &str {
@@ -567,6 +579,10 @@ impl FileSearchTool {
 impl Tool for FileSearchTool {
     fn name(&self) -> &str {
         "file_search"
+    }
+
+    fn metadata(&self) -> super::tool_policy::ToolMetadata {
+        super::tool_policy::ToolMetadata::read_only()
     }
 
     fn description(&self) -> &str {
@@ -834,6 +850,10 @@ impl Tool for GitStatusTool {
         "git_status"
     }
 
+    fn metadata(&self) -> super::tool_policy::ToolMetadata {
+        super::tool_policy::ToolMetadata::read_only()
+    }
+
     fn description(&self) -> &str {
         "Show git status and recent commit log for the project workspace."
     }
@@ -916,6 +936,10 @@ impl GitDiffTool {
 impl Tool for GitDiffTool {
     fn name(&self) -> &str {
         "git_diff"
+    }
+
+    fn metadata(&self) -> super::tool_policy::ToolMetadata {
+        super::tool_policy::ToolMetadata::read_only()
     }
 
     fn description(&self) -> &str {
@@ -1003,6 +1027,10 @@ impl GitLogTool {
 impl Tool for GitLogTool {
     fn name(&self) -> &str {
         "git_log"
+    }
+
+    fn metadata(&self) -> super::tool_policy::ToolMetadata {
+        super::tool_policy::ToolMetadata::read_only()
     }
 
     fn description(&self) -> &str {
