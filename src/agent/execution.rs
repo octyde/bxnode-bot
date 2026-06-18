@@ -15,8 +15,50 @@ use crate::providers::{
     CompletionRequest, CompletionResponse, Provider, StreamEvent, ToolDefinitionRequest,
 };
 
-/// Maximum number of tool call iterations
-const MAX_TOOL_ITERATIONS: usize = 10;
+/// Maximum number of tool-call iterations in one agent turn.
+///
+/// The loop spends one iteration per round-trip to the model. Real multi-step
+/// work (explore → edit → build → fix) needs more than a handful, so the cap is
+/// generous; the loop never *needs* to hit it because the last iteration forces
+/// a tools-disabled final answer (see [`MAX_TOOL_ITERATIONS`] usage). A model
+/// that only ever reads is caught earlier by the no-progress detector.
+const MAX_TOOL_ITERATIONS: usize = 24;
+
+/// How many consecutive identical tool calls (same name + same arguments) count
+/// as "spinning" — at which point the loop injects a nudge to break the model
+/// out of an unproductive read-loop (mirrors openclaw's generic-repeat
+/// detector). Identical *reads* are the common GLM failure mode.
+const SPIN_REPEAT_THRESHOLD: usize = 4;
+
+/// A stable signature for one tool call (name + canonical arguments), used to
+/// detect a model repeating the exact same call without making progress.
+fn tool_call_signature(call: &ToolCall) -> String {
+    // `serde_json::Value`'s Display is stable enough for equality of identical
+    // inputs; object key order from the same model is consistent within a turn.
+    format!("{}::{}", call.name, call.input)
+}
+
+/// The nudge injected when the model spins on identical tool calls — steer it to
+/// stop gathering and act (or answer) instead.
+const SPIN_NUDGE: &str = "You have repeated the same tool call several times \
+without new information. Stop gathering context now. Either make the concrete \
+change the task needs (edit a file), or, if you cannot, reply with a short \
+plain-text summary of what you found and what you would do next. Do NOT call \
+the same read-only tool again.";
+
+/// The instruction prepended on the final forced turn (tools disabled) so the
+/// model produces a useful answer instead of the loop ending in silence.
+const FORCED_FINAL_PROMPT: &str = "You have reached the tool-use limit for this \
+turn. Do not request any more tools. Using only what you already know, reply \
+now with a concise plain-text answer: what you did or found, and the single \
+most useful next step. This is your last message for this turn.";
+
+/// Honest fallback shown to the user if the turn still produced no text after the
+/// forced final turn — never return empty silence (mirrors openclaw's
+/// incomplete-turn surface).
+const EXHAUSTED_FALLBACK: &str = "⚠️ I used the whole tool budget for this turn \
+without reaching a conclusion. Some tool actions may have run — please review \
+before retrying, then send a narrower instruction.";
 
 /// Agent execution event
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,11 +118,7 @@ pub struct AgentExecutor {
 }
 
 impl AgentExecutor {
-    pub fn new(
-        provider: Arc<dyn Provider>,
-        tools: Arc<ToolRegistry>,
-        config: AgentConfig,
-    ) -> Self {
+    pub fn new(provider: Arc<dyn Provider>, tools: Arc<ToolRegistry>, config: AgentConfig) -> Self {
         Self {
             provider,
             tools,
@@ -111,7 +149,8 @@ impl AgentExecutor {
 
     /// Build tool definitions for the completion request
     fn build_tool_definitions(&self) -> Vec<ToolDefinitionRequest> {
-        let defs: Vec<ToolDefinitionRequest> = self.tools
+        let defs: Vec<ToolDefinitionRequest> = self
+            .tools
             .list()
             .into_iter()
             .map(|t| ToolDefinitionRequest {
@@ -120,8 +159,11 @@ impl AgentExecutor {
                 input_schema: t.input_schema,
             })
             .collect();
-        eprintln!("[agent] built {} tool definitions: {:?}",
-            defs.len(), defs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>());
+        eprintln!(
+            "[agent] built {} tool definitions: {:?}",
+            defs.len(),
+            defs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>()
+        );
         defs
     }
 
@@ -139,6 +181,9 @@ impl AgentExecutor {
         let mut total_compacted: usize = 0;
         let tool_defs = self.build_tool_definitions();
 
+        let mut last_signatures: Vec<String> = Vec::new();
+        let mut repeat_streak: usize = 0;
+
         // Main execution loop (handles tool calls)
         for iteration in 0..MAX_TOOL_ITERATIONS {
             usage.iterations = iteration + 1;
@@ -146,6 +191,12 @@ impl AgentExecutor {
             // Compact context via engine
             let compaction = self.context_engine.compact(context).await;
             total_compacted += compaction.messages_removed;
+
+            // Final iteration forces a tools-disabled answer (see streaming).
+            let forced_final = iteration == MAX_TOOL_ITERATIONS - 1;
+            if forced_final {
+                context.add_user_message(FORCED_FINAL_PROMPT);
+            }
 
             // Assemble messages via engine
             let turn = TurnInfo {
@@ -155,7 +206,7 @@ impl AgentExecutor {
             };
             let messages = self.context_engine.assemble(context, &turn).await;
 
-            // Build completion request
+            // Build completion request (no tools on the forced-final turn).
             let request = CompletionRequest {
                 model: self.config.model.clone(),
                 messages,
@@ -163,7 +214,11 @@ impl AgentExecutor {
                 max_tokens: Some(4096),
                 stop: vec![],
                 stream: false,
-                tools: tool_defs.clone(),
+                tools: if forced_final {
+                    Vec::new()
+                } else {
+                    tool_defs.clone()
+                },
             };
 
             // Call the provider
@@ -182,9 +237,21 @@ impl AgentExecutor {
                 final_content = response.content.clone();
                 context.add_assistant_message(&response.content);
                 // Post-turn hook
-                self.context_engine.after_turn(context, &response.content).await;
+                self.context_engine
+                    .after_turn(context, &response.content)
+                    .await;
                 break;
             }
+
+            // Anti-spin: same calls as last round ⇒ count the streak.
+            let signatures: Vec<String> = tool_calls.iter().map(tool_call_signature).collect();
+            if !last_signatures.is_empty() && signatures == last_signatures {
+                repeat_streak += 1;
+            } else {
+                repeat_streak = 0;
+            }
+            last_signatures = signatures;
+            let nudge_now = repeat_streak + 1 >= SPIN_REPEAT_THRESHOLD;
 
             // Execute tool calls
             usage.tool_calls += tool_calls.len();
@@ -196,6 +263,16 @@ impl AgentExecutor {
             // Add tool results as user messages (simplified approach)
             let tool_results_text = self.format_tool_results(&results);
             context.add_user_message(tool_results_text);
+
+            if nudge_now {
+                context.add_user_message(SPIN_NUDGE);
+                repeat_streak = 0;
+            }
+        }
+
+        if final_content.trim().is_empty() {
+            final_content = EXHAUSTED_FALLBACK.to_string();
+            context.add_assistant_message(&final_content);
         }
 
         Ok(ExecutionResult {
@@ -227,9 +304,24 @@ impl AgentExecutor {
         let mut total_compacted: usize = 0;
         let tool_defs = self.build_tool_definitions();
 
+        // Anti-spin: track the previous tool-call signatures so we can detect
+        // the model repeating identical calls without progress, and a running
+        // count of consecutive repeats.
+        let mut last_signatures: Vec<String> = Vec::new();
+        let mut repeat_streak: usize = 0;
+
         // Main execution loop
         for iteration in 0..MAX_TOOL_ITERATIONS {
             usage.iterations = iteration + 1;
+
+            // The final iteration is a FORCED ANSWER turn: disable tools so the
+            // model must reply with text instead of requesting yet another tool,
+            // guaranteeing the turn ends with something useful rather than
+            // silence (the dead-end this fixes). On that turn we also nudge it.
+            let forced_final = iteration == MAX_TOOL_ITERATIONS - 1;
+            if forced_final {
+                context.add_user_message(FORCED_FINAL_PROMPT);
+            }
 
             // Compact context via engine
             let compaction = self.context_engine.compact(context).await;
@@ -287,7 +379,8 @@ impl AgentExecutor {
                 eprintln!("[agent] WARNING malformed tool round: {why}");
             }
 
-            // Build completion request
+            // Build completion request. On the forced-final turn, send NO tools
+            // so the model cannot keep calling them and must produce text.
             let request = CompletionRequest {
                 model: self.config.model.clone(),
                 messages,
@@ -295,7 +388,11 @@ impl AgentExecutor {
                 max_tokens: Some(4096),
                 stop: vec![],
                 stream: true,
-                tools: tool_defs.clone(),
+                tools: if forced_final {
+                    Vec::new()
+                } else {
+                    tool_defs.clone()
+                },
             };
 
             // Call the provider with streaming
@@ -364,9 +461,25 @@ impl AgentExecutor {
                 final_content = response_content.clone();
                 context.add_assistant_message(&response_content);
                 // Post-turn hook
-                self.context_engine.after_turn(context, &response_content).await;
+                self.context_engine
+                    .after_turn(context, &response_content)
+                    .await;
                 break;
             }
+
+            // Anti-spin: if this round's tool calls are identical to the last
+            // round's (same names + args), the model is stuck re-reading. Count
+            // the streak; once it crosses the threshold, inject a one-time nudge
+            // to make it act or answer instead of looping (openclaw's
+            // generic-repeat pattern, adapted).
+            let signatures: Vec<String> = tool_calls.iter().map(tool_call_signature).collect();
+            if !last_signatures.is_empty() && signatures == last_signatures {
+                repeat_streak += 1;
+            } else {
+                repeat_streak = 0;
+            }
+            last_signatures = signatures;
+            let nudge_now = repeat_streak + 1 >= SPIN_REPEAT_THRESHOLD;
 
             // Execute tool calls
             usage.tool_calls += tool_calls.len();
@@ -412,6 +525,32 @@ impl AgentExecutor {
                 let tool_results_text = self.format_tool_results(&results);
                 context.add_user_message(tool_results_text);
             }
+
+            // Break a detected spin: append the nudge as a user message so the
+            // model sees it on the next round. Done after the tool round is
+            // recorded so the assistant(tool_calls)→tool(results) pairing the
+            // provider requires is never broken (GLM "messages illegal" guard).
+            if nudge_now {
+                eprintln!(
+                    "[agent] no-progress: {} identical tool round(s) — nudging the model to act",
+                    repeat_streak + 1
+                );
+                context.add_user_message(SPIN_NUDGE);
+                repeat_streak = 0;
+            }
+        }
+
+        // The loop ended. If it ran to the cap without the model producing any
+        // text (the forced-final turn still returned nothing, or every turn was
+        // tool calls), surface an honest message instead of empty silence — the
+        // chat must never look dead (the bug this fixes).
+        if final_content.trim().is_empty() {
+            eprintln!("[agent] turn exhausted the tool budget with no final text — using fallback");
+            final_content = EXHAUSTED_FALLBACK.to_string();
+            context.add_assistant_message(&final_content);
+            on_event(AgentEvent::TextDelta {
+                content: final_content.clone(),
+            });
         }
 
         on_event(AgentEvent::Completed {
@@ -531,10 +670,15 @@ fn validate_tool_round(messages: &[crate::providers::Message]) -> Result<(), Str
             let mut expected: Vec<&str> = Vec::with_capacity(m.tool_calls.len());
             for c in &m.tool_calls {
                 if c.id.is_empty() {
-                    return Err(format!("assistant message #{i} has a tool_call with an empty id"));
+                    return Err(format!(
+                        "assistant message #{i} has a tool_call with an empty id"
+                    ));
                 }
                 if expected.contains(&c.id.as_str()) {
-                    return Err(format!("assistant message #{i} has duplicate tool_call id '{}'", c.id));
+                    return Err(format!(
+                        "assistant message #{i} has duplicate tool_call id '{}'",
+                        c.id
+                    ));
                 }
                 expected.push(&c.id);
             }
@@ -838,6 +982,163 @@ mod tests {
             .any(|e| matches!(e, AgentEvent::ToolCall { call } if call.id == "call_abc")));
     }
 
+    /// A provider that requests the SAME tool call on every turn — until it is
+    /// sent a request with NO tools (the forced-final turn), where it returns
+    /// text. Models the GLM "reads forever" failure and proves the forced-final
+    /// turn rescues it. Also records every message shape it is sent so a test
+    /// can assert the tool-round contract is never violated.
+    struct SpinningMockProvider {
+        sent_message_shapes: std::sync::Mutex<Vec<usize>>,
+        forced_turn_had_no_tools: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait]
+    impl Provider for SpinningMockProvider {
+        fn id(&self) -> &str {
+            "mock-spin"
+        }
+        fn models(&self) -> Vec<ModelInfo> {
+            vec![]
+        }
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> anyhow::Result<CompletionResponse> {
+            unreachable!("streaming-only test")
+        }
+        async fn complete_stream(
+            &self,
+            request: CompletionRequest,
+        ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
+            use std::sync::atomic::Ordering;
+            self.sent_message_shapes
+                .lock()
+                .unwrap()
+                .push(request.messages.len());
+            // The forced-final turn arrives with tools disabled → answer.
+            if request.tools.is_empty() {
+                self.forced_turn_had_no_tools.store(true, Ordering::SeqCst);
+                return Ok(Box::pin(futures_util::stream::iter(vec![
+                    Ok(StreamEvent::TextDelta(
+                        "Here is what I found and the next step.".to_string(),
+                    )),
+                    Ok(StreamEvent::Done(Some(FinishReason::Stop))),
+                ])));
+            }
+            // Otherwise: the same read forever.
+            Ok(Box::pin(futures_util::stream::iter(vec![
+                Ok(StreamEvent::ToolCall(crate::providers::ToolCallResponse {
+                    id: format!("call_{}", request.messages.len()),
+                    name: "echo".to_string(),
+                    arguments: serde_json::json!({"text": "same"}),
+                })),
+                Ok(StreamEvent::Done(Some(FinishReason::ToolUse))),
+            ])))
+        }
+    }
+
+    #[tokio::test]
+    async fn forced_final_turn_rescues_a_spinning_model() {
+        // A model that only ever reads must NOT dead-end: the last iteration
+        // disables tools and forces a text answer, so the turn returns content.
+        let provider = Arc::new(SpinningMockProvider {
+            sent_message_shapes: std::sync::Mutex::new(Vec::new()),
+            forced_turn_had_no_tools: std::sync::atomic::AtomicBool::new(false),
+        });
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EchoTool));
+        let executor =
+            AgentExecutor::new(provider.clone(), Arc::new(registry), AgentConfig::default());
+        let mut context = AgentContext::default();
+
+        let result = executor
+            .execute_stream(&mut context, "do it", |_| {})
+            .await
+            .unwrap();
+
+        // The turn ends with the forced text answer, not silence.
+        assert!(
+            !result.content.trim().is_empty(),
+            "forced-final turn must produce text"
+        );
+        assert!(
+            result.content.contains("next step"),
+            "got the forced answer: {}",
+            result.content
+        );
+        assert!(
+            provider
+                .forced_turn_had_no_tools
+                .load(std::sync::atomic::Ordering::SeqCst),
+            "the final turn must be sent with tools disabled"
+        );
+        // It used the whole budget (the model never stopped on its own).
+        assert_eq!(result.usage.iterations, MAX_TOOL_ITERATIONS);
+
+        // CRITICAL (GLM contract): despite the forced-final prompt + anti-spin
+        // nudges being injected, the recorded conversation is still a valid tool
+        // round — every assistant(tool_calls) is answered by its tool results,
+        // contiguously. A violation is what GLM rejects as "messages illegal".
+        assert!(
+            validate_tool_round(context.messages()).is_ok(),
+            "injected prompts must not break the tool-round contract: {:?}",
+            validate_tool_round(context.messages())
+        );
+    }
+
+    /// A provider that ALWAYS requests a tool — even when tools are disabled it
+    /// returns another tool call (a degenerate model). Proves the exhaustion
+    /// fallback fires so the user still gets an honest message, never silence.
+    struct NeverAnswersMockProvider;
+
+    #[async_trait]
+    impl Provider for NeverAnswersMockProvider {
+        fn id(&self) -> &str {
+            "mock-never"
+        }
+        fn models(&self) -> Vec<ModelInfo> {
+            vec![]
+        }
+        async fn complete(&self, _r: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+            unreachable!()
+        }
+        async fn complete_stream(
+            &self,
+            request: CompletionRequest,
+        ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
+            // Even on the forced (tools-disabled) turn, emit no text — the
+            // worst case the fallback must handle.
+            Ok(Box::pin(futures_util::stream::iter(vec![
+                Ok(StreamEvent::ToolCall(crate::providers::ToolCallResponse {
+                    id: format!("c{}", request.messages.len()),
+                    name: "echo".to_string(),
+                    arguments: serde_json::json!({"text": "x"}),
+                })),
+                Ok(StreamEvent::Done(Some(FinishReason::ToolUse))),
+            ])))
+        }
+    }
+
+    #[tokio::test]
+    async fn exhaustion_fallback_prevents_empty_silence() {
+        // Even if the forced-final turn yields nothing, the user gets an honest
+        // message, never an empty result (the dead-looking-chat bug).
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EchoTool));
+        let executor = AgentExecutor::new(
+            Arc::new(NeverAnswersMockProvider),
+            Arc::new(registry),
+            AgentConfig::default(),
+        );
+        let mut context = AgentContext::default();
+        let result = executor
+            .execute_stream(&mut context, "go", |_| {})
+            .await
+            .unwrap();
+        assert!(!result.content.trim().is_empty(), "never empty");
+        assert_eq!(result.content, EXHAUSTED_FALLBACK);
+    }
+
     #[test]
     fn test_validate_tool_round_accepts_a_well_formed_round() {
         use crate::providers::{Message, Role, ToolCallResponse};
@@ -847,8 +1148,16 @@ mod tests {
             Message::assistant_tool_calls(
                 "",
                 vec![
-                    ToolCallResponse { id: "a".into(), name: "x".into(), arguments: serde_json::json!({}) },
-                    ToolCallResponse { id: "b".into(), name: "y".into(), arguments: serde_json::json!({}) },
+                    ToolCallResponse {
+                        id: "a".into(),
+                        name: "x".into(),
+                        arguments: serde_json::json!({}),
+                    },
+                    ToolCallResponse {
+                        id: "b".into(),
+                        name: "y".into(),
+                        arguments: serde_json::json!({}),
+                    },
                 ],
             ),
             Message::tool_result("a", "ra"),
@@ -866,7 +1175,11 @@ mod tests {
             Message::text(Role::User, "hi"),
             Message::assistant_tool_calls(
                 "",
-                vec![ToolCallResponse { id: "a".into(), name: "x".into(), arguments: serde_json::json!({}) }],
+                vec![ToolCallResponse {
+                    id: "a".into(),
+                    name: "x".into(),
+                    arguments: serde_json::json!({}),
+                }],
             ),
         ];
         assert!(validate_tool_round(&orphan).is_err());
@@ -875,7 +1188,11 @@ mod tests {
         let mismatch = vec![
             Message::assistant_tool_calls(
                 "",
-                vec![ToolCallResponse { id: "a".into(), name: "x".into(), arguments: serde_json::json!({}) }],
+                vec![ToolCallResponse {
+                    id: "a".into(),
+                    name: "x".into(),
+                    arguments: serde_json::json!({}),
+                }],
             ),
             Message::tool_result("WRONG", "r"),
         ];
@@ -885,7 +1202,11 @@ mod tests {
         let empty_id = vec![
             Message::assistant_tool_calls(
                 "",
-                vec![ToolCallResponse { id: "".into(), name: "x".into(), arguments: serde_json::json!({}) }],
+                vec![ToolCallResponse {
+                    id: "".into(),
+                    name: "x".into(),
+                    arguments: serde_json::json!({}),
+                }],
             ),
             Message::tool_result("", "r"),
         ];
