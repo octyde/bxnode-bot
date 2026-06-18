@@ -505,12 +505,13 @@ impl Provider for OpenAICompatibleProvider {
                                                         chunks.push(Ok(content.clone()));
                                                     }
                                                 }
-                                                // Fall back to reasoning_content (GLM-5, DeepSeek-R1)
-                                                if let Some(rc) = &choice.delta.reasoning_content {
-                                                    if !rc.is_empty() && choice.delta.content.as_ref().map_or(true, |c| c.is_empty()) {
-                                                        chunks.push(Ok(rc.clone()));
-                                                    }
-                                                }
+                                                // Deliberately DO NOT stream `reasoning_content` as
+                                                // reply text. It is the model's private chain-of-thought
+                                                // (GLM-5, DeepSeek-R1). Streaming it leaked the reasoning
+                                                // of every tool-call round ("The user is asking…",
+                                                // "Let me search…") plus serialized tool calls into the
+                                                // visible reply. The real answer arrives via
+                                                // `delta.content`; reasoning is dropped from the reply.
                                                 // Accumulate tool calls
                                                 if !choice.delta.tool_calls.is_empty() {
                                                     eprintln!("[{}] stream chunk has {} tool_calls", pid, choice.delta.tool_calls.len());
