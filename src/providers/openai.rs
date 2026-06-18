@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use futures_util::stream::BoxStream;
 
 use super::openai_compatible::{OpenAICompatibleConfig, OpenAICompatibleProvider};
-use super::{CompletionRequest, CompletionResponse, ModelInfo, Provider};
+use super::{CompletionRequest, CompletionResponse, ModelInfo, Provider, StreamEvent};
 
 /// OpenAI API configuration
 #[derive(Debug, Clone)]
@@ -110,7 +110,7 @@ impl Provider for OpenAIProvider {
     async fn complete_stream(
         &self,
         request: CompletionRequest,
-    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<String>>> {
+    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
         self.0.complete_stream(request).await
     }
 }

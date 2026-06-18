@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     CompletionRequest, CompletionResponse, FinishReason, Message, ModelInfo, Provider, Role,
-    ToolCallResponse, Usage,
+    StreamEvent, ToolCallResponse, Usage,
 };
 
 /// Configuration for an OpenAI-compatible provider
@@ -401,7 +401,7 @@ impl Provider for OpenAICompatibleProvider {
     async fn complete_stream(
         &self,
         request: CompletionRequest,
-    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<String>>> {
+    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
         let messages: Vec<serde_json::Value> = request
             .messages
             .into_iter()
@@ -473,17 +473,34 @@ impl Provider for OpenAICompatibleProvider {
         let provider_id = self.provider_id.clone();
         let byte_stream = response.bytes_stream();
 
-        // State for accumulating streamed tool calls
-        // Each tool call arrives incrementally: first chunk has id+name, subsequent chunks append arguments
-        // We accumulate them and emit as <tool_call> XML when the stream finishes (finish_reason="tool_calls")
+        // State for accumulating streamed tool calls.
+        // Each tool call arrives incrementally: the first chunk for an index has
+        // id+name, subsequent chunks append argument fragments. We accumulate by
+        // index and, on finish, emit one native StreamEvent::ToolCall per call.
         #[derive(Default)]
         struct ToolCallAccumulator {
             calls: Vec<(String, String, String)>, // (id, name, arguments_json)
         }
 
+        // Drain accumulated calls into typed ToolCall events. Arguments are
+        // parsed to JSON (empty/invalid → {}). Skips empty (id+name blank) slots.
+        fn flush_tool_calls(acc: &mut ToolCallAccumulator, pid: &str) -> Vec<anyhow::Result<StreamEvent>> {
+            let mut out = Vec::new();
+            for (id, name, args) in acc.calls.drain(..) {
+                if id.is_empty() && name.is_empty() {
+                    continue;
+                }
+                eprintln!("[{}] emitting native tool_call: id={}, name={}", pid, id, name);
+                let arguments: serde_json::Value =
+                    serde_json::from_str(&args).unwrap_or_else(|_| serde_json::json!({}));
+                out.push(Ok(StreamEvent::ToolCall(ToolCallResponse { id, name, arguments })));
+            }
+            out
+        }
+
         let stream = byte_stream
             .map(|result| result.map_err(|e| anyhow::anyhow!("Stream error: {}", e)))
-            .scan((String::new(), ToolCallAccumulator::default(), provider_id, false), |(buffer, tool_acc, pid, first_logged), result| {
+            .scan((String::new(), ToolCallAccumulator::default(), provider_id, false, None::<FinishReason>), |(buffer, tool_acc, pid, first_logged, finish), result| {
                 let chunks = match result {
                     Ok(bytes) => {
                         buffer.push_str(&String::from_utf8_lossy(&bytes));
@@ -499,19 +516,9 @@ impl Provider for OpenAICompatibleProvider {
                                 if let Some(data) = line.strip_prefix("data: ") {
                                     if data == "[DONE]" {
                                         eprintln!("[{}] stream [DONE], accumulated tool_calls: {}", pid, tool_acc.calls.len());
-                                        // Emit accumulated tool calls as XML
-                                        if !tool_acc.calls.is_empty() {
-                                            let mut xml = String::new();
-                                            for (id, name, args) in &tool_acc.calls {
-                                                eprintln!("[{}] emitting tool_call: id={}, name={}", pid, id, name);
-                                                xml.push_str(&format!(
-                                                    "<tool_call>{{\"id\":\"{}\",\"name\":\"{}\",\"arguments\":{}}}</tool_call>",
-                                                    id, name, args
-                                                ));
-                                            }
-                                            chunks.push(Ok(xml));
-                                            tool_acc.calls.clear();
-                                        }
+                                        // Emit any tool calls not already flushed at finish_reason.
+                                        chunks.extend(flush_tool_calls(tool_acc, pid));
+                                        chunks.push(Ok(StreamEvent::Done(finish.take())));
                                         continue;
                                     }
                                     // Log first SSE data line for debugging
@@ -528,7 +535,7 @@ impl Provider for OpenAICompatibleProvider {
                                                 // Handle text content
                                                 if let Some(content) = &choice.delta.content {
                                                     if !content.is_empty() {
-                                                        chunks.push(Ok(content.clone()));
+                                                        chunks.push(Ok(StreamEvent::TextDelta(content.clone())));
                                                     }
                                                 }
                                                 // Deliberately DO NOT stream `reasoning_content` as
@@ -562,19 +569,13 @@ impl Provider for OpenAICompatibleProvider {
                                                         }
                                                     }
                                                 }
-                                                // Emit tool calls on finish_reason=tool_calls
-                                                if choice.finish_reason.as_deref() == Some("tool_calls") {
-                                                    if !tool_acc.calls.is_empty() {
-                                                        let mut xml = String::new();
-                                                        for (id, name, args) in &tool_acc.calls {
-                                                            xml.push_str(&format!(
-                                                                "<tool_call>{{\"id\":\"{}\",\"name\":\"{}\",\"arguments\":{}}}</tool_call>",
-                                                                id, name, args
-                                                            ));
-                                                        }
-                                                        chunks.push(Ok(xml));
-                                                        tool_acc.calls.clear();
-                                                    }
+                                                // On a terminal finish_reason, flush accumulated
+                                                // tool calls and record the reason. The single
+                                                // Done event is emitted at the SSE [DONE] sentinel
+                                                // (always last) so we never double-emit Done.
+                                                if let Some(fr) = choice.finish_reason.as_deref() {
+                                                    chunks.extend(flush_tool_calls(tool_acc, pid));
+                                                    *finish = Some(Self::convert_finish_reason(fr));
                                                 }
                                             }
                                         }

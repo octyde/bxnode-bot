@@ -319,7 +319,7 @@ impl Provider for AnthropicProvider {
     async fn complete_stream(
         &self,
         request: CompletionRequest,
-    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<String>>> {
+    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<super::StreamEvent>>> {
         // Extract system message if present
         let mut system_prompt = None;
         let mut messages = Vec::new();
@@ -431,7 +431,7 @@ impl Provider for AnthropicProvider {
                                                     tool_acc.current_input.push_str(&partial);
                                                 }
                                             } else if let Some(text) = delta.text {
-                                                chunks.push(Ok(text));
+                                                chunks.push(Ok(super::StreamEvent::TextDelta(text)));
                                             }
                                         }
                                         StreamEvent::ContentBlockStop { .. } => {
@@ -444,20 +444,34 @@ impl Provider for AnthropicProvider {
                                                 tool_acc.in_tool_use = false;
                                             }
                                         }
-                                        StreamEvent::MessageDelta { .. } | StreamEvent::MessageStop => {
-                                            // Emit accumulated tool calls as XML
-                                            if !tool_acc.completed.is_empty() {
-                                                let mut xml = String::new();
-                                                for (id, name, input) in &tool_acc.completed {
-                                                    let input_json = if input.is_empty() { "{}" } else { input.as_str() };
-                                                    xml.push_str(&format!(
-                                                        "<tool_call>{{\"id\":\"{}\",\"name\":\"{}\",\"arguments\":{}}}</tool_call>",
-                                                        id, name, input_json
-                                                    ));
-                                                }
-                                                chunks.push(Ok(xml));
-                                                tool_acc.completed.clear();
+                                        StreamEvent::MessageDelta { .. } => {
+                                            // Flush accumulated tool calls as native events.
+                                            for (id, name, input) in tool_acc.completed.drain(..) {
+                                                let arguments: serde_json::Value = if input.is_empty() {
+                                                    serde_json::json!({})
+                                                } else {
+                                                    serde_json::from_str(&input)
+                                                        .unwrap_or_else(|_| serde_json::json!({}))
+                                                };
+                                                chunks.push(Ok(super::StreamEvent::ToolCall(
+                                                    ToolCallResponse { id, name, arguments },
+                                                )));
                                             }
+                                        }
+                                        StreamEvent::MessageStop => {
+                                            // Any not-yet-flushed tool calls, then terminal Done.
+                                            for (id, name, input) in tool_acc.completed.drain(..) {
+                                                let arguments: serde_json::Value = if input.is_empty() {
+                                                    serde_json::json!({})
+                                                } else {
+                                                    serde_json::from_str(&input)
+                                                        .unwrap_or_else(|_| serde_json::json!({}))
+                                                };
+                                                chunks.push(Ok(super::StreamEvent::ToolCall(
+                                                    ToolCallResponse { id, name, arguments },
+                                                )));
+                                            }
+                                            chunks.push(Ok(super::StreamEvent::Done(None)));
                                         }
                                         _ => {}
                                     }

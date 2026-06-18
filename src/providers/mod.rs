@@ -96,7 +96,7 @@ pub struct ToolDefinitionRequest {
 }
 
 /// Tool call parsed from provider response
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallResponse {
     /// Tool call ID
     pub id: String,
@@ -104,6 +104,23 @@ pub struct ToolCallResponse {
     pub name: String,
     /// Tool arguments as JSON
     pub arguments: serde_json::Value,
+}
+
+/// A single event emitted by [`Provider::complete_stream`].
+///
+/// Streaming used to be text-only (`BoxStream<String>`), which forced tool
+/// calls to be smuggled as XML inside the text and then re-parsed. That made
+/// the assistant turn impossible to represent as a real `assistant(tool_calls)`
+/// message, which is exactly what Z.AI/OpenAI reject ("messages parameter is
+/// illegal"). Typed events let the provider surface native tool calls directly.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StreamEvent {
+    /// A chunk of assistant text content.
+    TextDelta(String),
+    /// A fully-assembled native tool call the model requested.
+    ToolCall(ToolCallResponse),
+    /// The stream finished. Carries the reason if the provider reported one.
+    Done(Option<FinishReason>),
 }
 
 /// Completion request
@@ -184,11 +201,14 @@ pub trait Provider: Send + Sync {
     /// Create a completion
     async fn complete(&self, request: CompletionRequest) -> anyhow::Result<CompletionResponse>;
 
-    /// Create a streaming completion
+    /// Create a streaming completion.
+    ///
+    /// Yields typed [`StreamEvent`]s: text deltas, native tool calls, and a
+    /// terminal `Done`. Providers that only stream text emit `TextDelta` + `Done`.
     async fn complete_stream(
         &self,
         request: CompletionRequest,
-    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<String>>>;
+    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>>;
 }
 
 /// Model information

@@ -5,10 +5,7 @@ use serde_json::json;
 
 #[test]
 fn test_message_creation() {
-    let msg = Message {
-        role: Role::User,
-        content: "Hello, assistant!".to_string(),
-    };
+    let msg = Message::text(Role::User, "Hello, assistant!");
 
     assert_eq!(msg.role, Role::User);
     assert_eq!(msg.content, "Hello, assistant!");
@@ -39,10 +36,7 @@ fn test_role_deserialization() {
 
 #[test]
 fn test_message_serialization() {
-    let msg = Message {
-        role: Role::Assistant,
-        content: "How can I help you?".to_string(),
-    };
+    let msg = Message::text(Role::Assistant, "How can I help you?");
 
     let json = serde_json::to_value(&msg).unwrap();
 
@@ -54,10 +48,7 @@ fn test_message_serialization() {
 fn test_completion_request_basic() {
     let request = CompletionRequest {
         model: "claude-3-opus".to_string(),
-        messages: vec![Message {
-            role: Role::User,
-            content: "Hello".to_string(),
-        }],
+        messages: vec![Message::text(Role::User, "Hello")],
         temperature: None,
         max_tokens: None,
         stop: vec![],
@@ -75,14 +66,8 @@ fn test_completion_request_serialization() {
     let request = CompletionRequest {
         model: "gpt-4".to_string(),
         messages: vec![
-            Message {
-                role: Role::System,
-                content: "You are a helpful assistant.".to_string(),
-            },
-            Message {
-                role: Role::User,
-                content: "What is 2+2?".to_string(),
-            },
+            Message::text(Role::System, "You are a helpful assistant."),
+            Message::text(Role::User, "What is 2+2?"),
         ],
         temperature: Some(0.7),
         max_tokens: Some(1000),
@@ -267,14 +252,8 @@ fn test_completion_request_with_all_fields() {
     let request = CompletionRequest {
         model: "claude-3-sonnet".to_string(),
         messages: vec![
-            Message {
-                role: Role::System,
-                content: "Be concise.".to_string(),
-            },
-            Message {
-                role: Role::User,
-                content: "Summarize AI.".to_string(),
-            },
+            Message::text(Role::System, "Be concise."),
+            Message::text(Role::User, "Summarize AI."),
         ],
         temperature: Some(0.5),
         max_tokens: Some(500),

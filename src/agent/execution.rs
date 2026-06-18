@@ -11,7 +11,9 @@ use super::context::AgentContext;
 use super::context_engine::{CompactionResult, ContextEngine, LegacyContextEngine, TurnInfo};
 use super::tools::{ToolCall, ToolRegistry, ToolResult};
 use super::AgentConfig;
-use crate::providers::{CompletionRequest, CompletionResponse, Provider, ToolDefinitionRequest};
+use crate::providers::{
+    CompletionRequest, CompletionResponse, Provider, StreamEvent, ToolDefinitionRequest,
+};
 
 /// Maximum number of tool call iterations
 const MAX_TOOL_ITERATIONS: usize = 10;
@@ -256,14 +258,21 @@ impl AgentExecutor {
             let mut stream = self.provider.complete_stream(request).await?;
 
             let mut response_content = String::new();
+            // Native tool calls surfaced by the provider this turn.
+            let mut native_tool_calls: Vec<crate::providers::ToolCallResponse> = Vec::new();
 
             while let Some(result) = stream.next().await {
                 match result {
-                    Ok(chunk) => {
-                        response_content.push_str(&chunk);
-                        on_event(AgentEvent::TextDelta {
-                            content: chunk,
-                        });
+                    Ok(StreamEvent::TextDelta(content)) => {
+                        response_content.push_str(&content);
+                        on_event(AgentEvent::TextDelta { content });
+                    }
+                    Ok(StreamEvent::ToolCall(tc)) => {
+                        native_tool_calls.push(tc);
+                    }
+                    Ok(StreamEvent::Done(_)) => {
+                        // Terminal marker — keep draining in case the provider
+                        // emits trailing events, but nothing more is expected.
                     }
                     Err(e) => {
                         on_event(AgentEvent::Error {
@@ -274,11 +283,27 @@ impl AgentExecutor {
                 }
             }
 
-            // Parse response for tool calls
-            let tool_calls = self.parse_tool_calls_from_text(&response_content);
-            eprintln!("[agent] iteration {}: response {} chars, found {} tool_calls, has <tool_call>: {}",
-                iteration, response_content.len(), tool_calls.len(),
-                response_content.contains("<tool_call>"));
+            // Prefer native tool calls; fall back to XML-in-text only if the
+            // provider surfaced none (legacy / non-tool-calling models).
+            let tool_calls: Vec<ToolCall> = if native_tool_calls.is_empty() {
+                self.parse_tool_calls_from_text(&response_content)
+            } else {
+                native_tool_calls
+                    .iter()
+                    .map(|tc| ToolCall {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        input: tc.arguments.clone(),
+                    })
+                    .collect()
+            };
+            eprintln!(
+                "[agent] iteration {}: response {} chars, {} native + {} total tool_calls",
+                iteration,
+                response_content.len(),
+                native_tool_calls.len(),
+                tool_calls.len()
+            );
 
             if tool_calls.is_empty() {
                 // No tool calls, we're done
@@ -304,10 +329,23 @@ impl AgentExecutor {
                 });
             }
 
-            // Add to context
-            context.add_assistant_message(&response_content);
-            let tool_results_text = self.format_tool_results(&results);
-            context.add_user_message(tool_results_text);
+            // Record a valid tool round: an assistant message carrying the
+            // tool_calls, followed by one tool-role message per result keyed by
+            // tool_call_id. This is the message shape OpenAI/Z.AI require — the
+            // old "assistant text + fake user message" path is what triggered
+            // "messages parameter is illegal".
+            let assistant_tool_calls: Vec<crate::providers::ToolCallResponse> = tool_calls
+                .iter()
+                .map(|c| crate::providers::ToolCallResponse {
+                    id: c.id.clone(),
+                    name: c.name.clone(),
+                    arguments: c.input.clone(),
+                })
+                .collect();
+            context.add_assistant_tool_calls(response_content.clone(), assistant_tool_calls);
+            for result in &results {
+                context.add_tool_result(result.tool_call_id.clone(), result.content.clone());
+            }
         }
 
         on_event(AgentEvent::Completed {
@@ -425,7 +463,8 @@ pub struct ExecutionResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::{FinishReason, ModelInfo, Usage};
+    use crate::agent::tools::Tool;
+    use crate::providers::{FinishReason, ModelInfo, Role, Usage};
     use async_trait::async_trait;
     use futures_util::stream::BoxStream;
 
@@ -469,9 +508,12 @@ mod tests {
         async fn complete_stream(
             &self,
             _request: CompletionRequest,
-        ) -> anyhow::Result<BoxStream<'static, anyhow::Result<String>>> {
+        ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
             let content = self.response.clone();
-            let stream = futures_util::stream::once(async move { Ok(content) });
+            let stream = futures_util::stream::iter(vec![
+                Ok(StreamEvent::TextDelta(content)),
+                Ok(StreamEvent::Done(Some(FinishReason::Stop))),
+            ]);
             Ok(Box::pin(stream))
         }
     }
@@ -546,5 +588,118 @@ mod tests {
         assert!(formatted.contains("call-1"));
         assert!(formatted.contains("Result 1"));
         assert!(formatted.contains("Error message"));
+    }
+
+    /// A provider that emits a native tool call on the first turn, then plain
+    /// text on the second — exercising the assistant(tool_calls) → tool(result)
+    /// → assistant message round.
+    struct ToolCallingMockProvider {
+        turn: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for ToolCallingMockProvider {
+        fn id(&self) -> &str {
+            "mock-tools"
+        }
+        fn models(&self) -> Vec<ModelInfo> {
+            vec![]
+        }
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> anyhow::Result<CompletionResponse> {
+            unreachable!("streaming-only test")
+        }
+        async fn complete_stream(
+            &self,
+            _request: CompletionRequest,
+        ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
+            use std::sync::atomic::Ordering;
+            let n = self.turn.fetch_add(1, Ordering::SeqCst);
+            let events: Vec<anyhow::Result<StreamEvent>> = if n == 0 {
+                vec![
+                    Ok(StreamEvent::ToolCall(crate::providers::ToolCallResponse {
+                        id: "call_abc".to_string(),
+                        name: "echo".to_string(),
+                        arguments: serde_json::json!({"text": "hi"}),
+                    })),
+                    Ok(StreamEvent::Done(Some(FinishReason::ToolUse))),
+                ]
+            } else {
+                vec![
+                    Ok(StreamEvent::TextDelta("All done.".to_string())),
+                    Ok(StreamEvent::Done(Some(FinishReason::Stop))),
+                ]
+            };
+            Ok(Box::pin(futures_util::stream::iter(events)))
+        }
+    }
+
+    /// Minimal echo tool that returns its `text` argument.
+    struct EchoTool;
+
+    #[async_trait]
+    impl Tool for EchoTool {
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn description(&self) -> &str {
+            "Echoes the input text"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}})
+        }
+        async fn execute(&self, input: serde_json::Value) -> anyhow::Result<String> {
+            Ok(input
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_native_tool_call_round_builds_valid_messages() {
+        let provider = Arc::new(ToolCallingMockProvider {
+            turn: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EchoTool));
+        let tools = Arc::new(registry);
+        let config = AgentConfig::default();
+
+        let executor = AgentExecutor::new(provider, tools, config);
+        let mut context = AgentContext::default();
+
+        let mut events = Vec::new();
+        let result = executor
+            .execute_stream(&mut context, "echo hi", |e| events.push(e))
+            .await
+            .unwrap();
+
+        assert_eq!(result.content, "All done.");
+
+        // The recorded conversation must be a valid OpenAI/Z.AI tool round:
+        // assistant(with tool_calls) → tool(result keyed by id) → assistant(text).
+        let msgs = context.messages();
+        let assistant_with_calls = msgs
+            .iter()
+            .find(|m| m.role == Role::Assistant && !m.tool_calls.is_empty())
+            .expect("an assistant message carrying tool_calls");
+        assert_eq!(assistant_with_calls.tool_calls[0].id, "call_abc");
+        assert_eq!(assistant_with_calls.tool_calls[0].name, "echo");
+
+        let tool_msg = msgs
+            .iter()
+            .find(|m| m.role == Role::Tool)
+            .expect("a tool-role result message");
+        assert_eq!(tool_msg.tool_call_id.as_deref(), Some("call_abc"));
+        assert_eq!(tool_msg.content, "hi");
+
+        // And the model's native tool call surfaced as an AgentEvent::ToolCall.
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolCall { call } if call.id == "call_abc")));
     }
 }

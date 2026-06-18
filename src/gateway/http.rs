@@ -289,16 +289,20 @@ pub async fn chat_completions(
 
 /// Create SSE stream from provider stream
 fn create_sse_stream(
-    stream: futures_util::stream::BoxStream<'static, anyhow::Result<String>>,
+    stream: futures_util::stream::BoxStream<'static, anyhow::Result<crate::providers::StreamEvent>>,
     model: String,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
+    use crate::providers::StreamEvent;
     let id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
     let created = chrono::Utc::now().timestamp();
 
     stream
-        .map(move |result| {
-            let event = match result {
-                Ok(content) => {
+        .filter_map(move |result| {
+            // Only text deltas become content chunks. ToolCall/Done events are
+            // not forwarded by this passthrough proxy — the trailing finish
+            // chunk + [DONE] below already close the OpenAI-shaped stream.
+            let mapped = match result {
+                Ok(StreamEvent::TextDelta(content)) => {
                     let chunk = StreamChunk {
                         id: id.clone(),
                         object: "chat.completion.chunk".to_string(),
@@ -313,17 +317,19 @@ fn create_sse_stream(
                             finish_reason: None,
                         }],
                     };
-                    Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
+                    Some(Ok(Event::default()
+                        .data(serde_json::to_string(&chunk).unwrap_or_default())))
                 }
+                Ok(StreamEvent::ToolCall(_)) | Ok(StreamEvent::Done(_)) => None,
                 Err(e) => {
                     tracing::error!("Stream error: {}", e);
-                    Event::default().data(format!(
+                    Some(Ok(Event::default().data(format!(
                         "{{\"error\": {{\"message\": \"{}\"}}}}",
                         e.to_string().replace('"', "\\\"")
-                    ))
+                    ))))
                 }
             };
-            Ok(event)
+            std::future::ready(mapped)
         })
         .chain(futures_util::stream::once(async move {
             // Send final chunk with finish_reason

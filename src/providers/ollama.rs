@@ -7,7 +7,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CompletionRequest, CompletionResponse, FinishReason, ModelInfo, Provider, Role, Usage,
+    CompletionRequest, CompletionResponse, FinishReason, ModelInfo, Provider, Role, StreamEvent,
+    Usage,
 };
 
 /// Ollama API configuration
@@ -272,7 +273,7 @@ impl Provider for OllamaProvider {
     async fn complete_stream(
         &self,
         request: CompletionRequest,
-    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<String>>> {
+    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
         let messages: Vec<OllamaMessage> = request
             .messages
             .into_iter()
@@ -338,7 +339,12 @@ impl Provider for OllamaProvider {
 
                             if let Ok(chunk) = serde_json::from_str::<StreamingChunk>(&line) {
                                 if !chunk.message.content.is_empty() {
-                                    chunks.push(Ok(chunk.message.content));
+                                    chunks.push(Ok(StreamEvent::TextDelta(chunk.message.content)));
+                                }
+                                if chunk.done {
+                                    chunks.push(Ok(StreamEvent::Done(Some(
+                                        Self::convert_done_reason(chunk.done_reason.as_deref()),
+                                    ))));
                                 }
                             }
                         }
