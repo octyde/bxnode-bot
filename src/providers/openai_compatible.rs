@@ -484,11 +484,22 @@ impl Provider for OpenAICompatibleProvider {
 
         // Drain accumulated calls into typed ToolCall events. Arguments are
         // parsed to JSON (empty/invalid → {}). Skips empty (id+name blank) slots.
+        //
+        // An id MUST be non-empty and unique: it becomes the assistant
+        // message's tool_calls[].id AND the matching tool message's
+        // tool_call_id on the next turn, and Z.AI/GLM reject a tool round whose
+        // ids are blank or duplicated. Some providers stream the id only in the
+        // first delta for an index; if we somehow accumulated a named call with
+        // no id, synthesize a stable per-index id so the round stays valid.
         fn flush_tool_calls(acc: &mut ToolCallAccumulator, pid: &str) -> Vec<anyhow::Result<StreamEvent>> {
             let mut out = Vec::new();
-            for (id, name, args) in acc.calls.drain(..) {
+            for (idx, (mut id, name, args)) in acc.calls.drain(..).enumerate() {
                 if id.is_empty() && name.is_empty() {
                     continue;
+                }
+                if id.is_empty() {
+                    id = format!("call_{pid}_{idx}");
+                    eprintln!("[{}] tool_call had empty id; synthesized {}", pid, id);
                 }
                 eprintln!("[{}] emitting native tool_call: id={}, name={}", pid, id, name);
                 let arguments: serde_json::Value =

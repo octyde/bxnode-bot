@@ -243,6 +243,44 @@ impl AgentExecutor {
             };
             let messages = self.context_engine.assemble(context, &turn).await;
 
+            // Diagnostic: dump the exact message shape going to the provider so
+            // a malformed tool round (assistant-with-tool_calls not answered by
+            // matching tool messages) is visible in the console. A correct
+            // second turn reads e.g. [system, user, assistant(tool_calls=[..]),
+            // tool(answers=call_x) x N]; a count like 3 here means the tool
+            // results never landed (a stale binary, pre tool-round fix).
+            eprintln!(
+                "[agent] iter {} assembled {} messages: [{}]",
+                iteration,
+                messages.len(),
+                messages
+                    .iter()
+                    .map(|m| {
+                        let role = format!("{:?}", m.role).to_lowercase();
+                        if !m.tool_calls.is_empty() {
+                            let ids: Vec<&str> =
+                                m.tool_calls.iter().map(|c| c.id.as_str()).collect();
+                            format!("{role}(tool_calls={:?})", ids)
+                        } else if let Some(id) = &m.tool_call_id {
+                            format!("{role}(answers={id})")
+                        } else {
+                            format!("{role}({}c)", m.content.len())
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+
+            // Invariant: every assistant(tool_calls) must be answered by a
+            // contiguous run of tool messages whose ids cover its tool_calls
+            // 1:1 (no missing, no extra, no empty, no duplicate), and must
+            // never be the final message. A violation is exactly what Z.AI/GLM
+            // rejects as "messages parameter is illegal" — surface it loudly
+            // here instead of as an opaque provider 400.
+            if let Err(why) = validate_tool_round(&messages) {
+                eprintln!("[agent] WARNING malformed tool round: {why}");
+            }
+
             // Build completion request
             let request = CompletionRequest {
                 model: self.config.model.clone(),
@@ -285,9 +323,17 @@ impl AgentExecutor {
 
             // Prefer native tool calls; fall back to XML-in-text only if the
             // provider surfaced none (legacy / non-tool-calling models).
-            let tool_calls: Vec<ToolCall> = if native_tool_calls.is_empty() {
-                self.parse_tool_calls_from_text(&response_content)
-            } else {
+            //
+            // `from_native` decides how the round is RECORDED below. Native
+            // calls carry real, model-issued ids and replay as a proper
+            // assistant(tool_calls) + tool(result) round. Text-parsed calls
+            // have *synthesized* ids (`tc_1`, …) the model never issued —
+            // replaying those as a native tool round makes Z.AI/GLM reject the
+            // next request ("messages parameter is illegal"), because a tool
+            // message's tool_call_id must reference an id the model actually
+            // produced. The fallback path therefore uses the legacy text round.
+            let from_native = !native_tool_calls.is_empty();
+            let tool_calls: Vec<ToolCall> = if from_native {
                 native_tool_calls
                     .iter()
                     .map(|tc| ToolCall {
@@ -296,6 +342,8 @@ impl AgentExecutor {
                         input: tc.arguments.clone(),
                     })
                     .collect()
+            } else {
+                self.parse_tool_calls_from_text(&response_content)
             };
             eprintln!(
                 "[agent] iteration {}: response {} chars, {} native + {} total tool_calls",
@@ -329,22 +377,34 @@ impl AgentExecutor {
                 });
             }
 
-            // Record a valid tool round: an assistant message carrying the
-            // tool_calls, followed by one tool-role message per result keyed by
-            // tool_call_id. This is the message shape OpenAI/Z.AI require — the
-            // old "assistant text + fake user message" path is what triggered
-            // "messages parameter is illegal".
-            let assistant_tool_calls: Vec<crate::providers::ToolCallResponse> = tool_calls
-                .iter()
-                .map(|c| crate::providers::ToolCallResponse {
-                    id: c.id.clone(),
-                    name: c.name.clone(),
-                    arguments: c.input.clone(),
-                })
-                .collect();
-            context.add_assistant_tool_calls(response_content.clone(), assistant_tool_calls);
-            for result in &results {
-                context.add_tool_result(result.tool_call_id.clone(), result.content.clone());
+            if from_native {
+                // Record a valid native tool round: an assistant message
+                // carrying the tool_calls, followed by one tool-role message
+                // per result keyed by tool_call_id. This is the message shape
+                // OpenAI/Z.AI require — the old "assistant text + fake user
+                // message" path is what triggered "messages parameter is
+                // illegal". Every id here is a real, model-issued id.
+                let assistant_tool_calls: Vec<crate::providers::ToolCallResponse> = tool_calls
+                    .iter()
+                    .map(|c| crate::providers::ToolCallResponse {
+                        id: c.id.clone(),
+                        name: c.name.clone(),
+                        arguments: c.input.clone(),
+                    })
+                    .collect();
+                context.add_assistant_tool_calls(response_content.clone(), assistant_tool_calls);
+                for result in &results {
+                    context.add_tool_result(result.tool_call_id.clone(), result.content.clone());
+                }
+            } else {
+                // Text-parsed (XML) tool calls have synthesized ids, not
+                // model-issued ones. Replaying them as a native tool_calls
+                // round would be rejected by Z.AI/GLM. Use the legacy text
+                // round — assistant text + a user "Tool Results" message — so
+                // no fabricated tool_call_id ever reaches the provider.
+                context.add_assistant_message(&response_content);
+                let tool_results_text = self.format_tool_results(&results);
+                context.add_user_message(tool_results_text);
             }
         }
 
@@ -445,6 +505,75 @@ impl AgentExecutor {
 
         output
     }
+}
+
+/// Validate that a message array forms a legal tool round for an
+/// OpenAI/Z.AI `/chat/completions` request.
+///
+/// Each assistant message carrying `tool_calls` must be followed immediately
+/// by exactly one `tool` message per call id, covering the assistant's id set
+/// 1:1 — no missing, no extra, no empty, no duplicate ids — and must never be
+/// the final message in the array. These are precisely the constraints whose
+/// violation Z.AI/GLM reports as "messages parameter is illegal".
+fn validate_tool_round(messages: &[crate::providers::Message]) -> Result<(), String> {
+    use crate::providers::Role;
+    let mut i = 0;
+    while i < messages.len() {
+        let m = &messages[i];
+        if m.role == Role::Assistant && !m.tool_calls.is_empty() {
+            // Collect the assistant's call ids (must be non-empty + unique).
+            let mut expected: Vec<&str> = Vec::with_capacity(m.tool_calls.len());
+            for c in &m.tool_calls {
+                if c.id.is_empty() {
+                    return Err(format!("assistant message #{i} has a tool_call with an empty id"));
+                }
+                if expected.contains(&c.id.as_str()) {
+                    return Err(format!("assistant message #{i} has duplicate tool_call id '{}'", c.id));
+                }
+                expected.push(&c.id);
+            }
+            // The following messages must be exactly the matching tool results.
+            for (k, want) in expected.iter().enumerate() {
+                let answer = messages.get(i + 1 + k);
+                match answer {
+                    Some(a) if a.role == Role::Tool => {
+                        match a.tool_call_id.as_deref() {
+                            Some(got) if got == *want => {}
+                            Some(got) => {
+                                return Err(format!(
+                                    "tool result #{} answers '{got}' but expected '{want}'",
+                                    i + 1 + k
+                                ))
+                            }
+                            None => {
+                                return Err(format!(
+                                    "tool message #{} is missing tool_call_id (expected '{want}')",
+                                    i + 1 + k
+                                ))
+                            }
+                        }
+                    }
+                    Some(a) => {
+                        return Err(format!(
+                            "assistant tool_calls at #{i} not answered: message #{} is {:?}, expected a tool result for '{want}'",
+                            i + 1 + k,
+                            a.role
+                        ))
+                    }
+                    None => {
+                        return Err(format!(
+                            "assistant tool_calls at #{i} is the last message (or short {} results); expected a tool result for '{want}'",
+                            expected.len()
+                        ))
+                    }
+                }
+            }
+            i += 1 + expected.len();
+        } else {
+            i += 1;
+        }
+    }
+    Ok(())
 }
 
 /// Result of agent execution
@@ -701,5 +830,145 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, AgentEvent::ToolCall { call } if call.id == "call_abc")));
+    }
+
+    #[test]
+    fn test_validate_tool_round_accepts_a_well_formed_round() {
+        use crate::providers::{Message, Role, ToolCallResponse};
+        let msgs = vec![
+            Message::text(Role::System, "sys"),
+            Message::text(Role::User, "hi"),
+            Message::assistant_tool_calls(
+                "",
+                vec![
+                    ToolCallResponse { id: "a".into(), name: "x".into(), arguments: serde_json::json!({}) },
+                    ToolCallResponse { id: "b".into(), name: "y".into(), arguments: serde_json::json!({}) },
+                ],
+            ),
+            Message::tool_result("a", "ra"),
+            Message::tool_result("b", "rb"),
+            Message::text(Role::Assistant, "done"),
+        ];
+        assert!(validate_tool_round(&msgs).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_round_rejects_orphan_and_mismatch() {
+        use crate::providers::{Message, Role, ToolCallResponse};
+        // Orphan: assistant tool_calls is the last message.
+        let orphan = vec![
+            Message::text(Role::User, "hi"),
+            Message::assistant_tool_calls(
+                "",
+                vec![ToolCallResponse { id: "a".into(), name: "x".into(), arguments: serde_json::json!({}) }],
+            ),
+        ];
+        assert!(validate_tool_round(&orphan).is_err());
+
+        // Mismatch: the tool result answers a different id.
+        let mismatch = vec![
+            Message::assistant_tool_calls(
+                "",
+                vec![ToolCallResponse { id: "a".into(), name: "x".into(), arguments: serde_json::json!({}) }],
+            ),
+            Message::tool_result("WRONG", "r"),
+        ];
+        assert!(validate_tool_round(&mismatch).is_err());
+
+        // Empty id is illegal.
+        let empty_id = vec![
+            Message::assistant_tool_calls(
+                "",
+                vec![ToolCallResponse { id: "".into(), name: "x".into(), arguments: serde_json::json!({}) }],
+            ),
+            Message::tool_result("", "r"),
+        ];
+        assert!(validate_tool_round(&empty_id).is_err());
+    }
+
+    /// A provider that emits NO native tool calls, instead returning an
+    /// XML `<tool_call>` block as plain text on the first turn (the legacy
+    /// shape some GLM builds fall back to), then plain text on the second.
+    struct XmlToolCallMockProvider {
+        turn: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for XmlToolCallMockProvider {
+        fn id(&self) -> &str {
+            "mock-xml"
+        }
+        fn models(&self) -> Vec<ModelInfo> {
+            vec![]
+        }
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> anyhow::Result<CompletionResponse> {
+            unreachable!("streaming-only test")
+        }
+        async fn complete_stream(
+            &self,
+            _request: CompletionRequest,
+        ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
+            use std::sync::atomic::Ordering;
+            let n = self.turn.fetch_add(1, Ordering::SeqCst);
+            let events: Vec<anyhow::Result<StreamEvent>> = if n == 0 {
+                vec![
+                    Ok(StreamEvent::TextDelta(
+                        "<tool_call>{\"name\":\"echo\",\"arguments\":{\"text\":\"hi\"}}</tool_call>"
+                            .to_string(),
+                    )),
+                    Ok(StreamEvent::Done(Some(FinishReason::Stop))),
+                ]
+            } else {
+                vec![
+                    Ok(StreamEvent::TextDelta("All done.".to_string())),
+                    Ok(StreamEvent::Done(Some(FinishReason::Stop))),
+                ]
+            };
+            Ok(Box::pin(futures_util::stream::iter(events)))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_text_fallback_tool_round_never_sends_synthetic_ids() {
+        let provider = Arc::new(XmlToolCallMockProvider {
+            turn: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EchoTool));
+        let tools = Arc::new(registry);
+        let config = AgentConfig::default();
+
+        let executor = AgentExecutor::new(provider, tools, config);
+        let mut context = AgentContext::default();
+
+        let result = executor
+            .execute_stream(&mut context, "echo hi", |_| {})
+            .await
+            .unwrap();
+        assert_eq!(result.content, "All done.");
+
+        // The XML fallback path must NOT emit a native tool round: synthesized
+        // ids (tc_1, …) the model never issued would make Z.AI/GLM reject the
+        // next request. So there must be NO Role::Tool message and NO assistant
+        // message carrying tool_calls — the round is recorded as the legacy
+        // assistant-text + user "Tool Results" pair instead.
+        let msgs = context.messages();
+        assert!(
+            !msgs.iter().any(|m| m.role == Role::Tool),
+            "text-fallback must not produce role:tool messages with fabricated ids"
+        );
+        assert!(
+            !msgs.iter().any(|m| !m.tool_calls.is_empty()),
+            "text-fallback must not produce an assistant message with tool_calls"
+        );
+        // The tool actually ran and its result was threaded back as user text.
+        assert!(
+            msgs.iter()
+                .any(|m| m.role == Role::User && m.content.contains("hi")),
+            "the echo result should appear in a user 'Tool Results' message"
+        );
     }
 }
