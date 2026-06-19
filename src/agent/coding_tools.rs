@@ -193,7 +193,11 @@ impl Tool for FileReadTool {
             .unwrap_or(lines.len());
 
         let start_idx = (line_start - 1).min(lines.len());
-        let end_idx = line_end.min(lines.len());
+        // `end_idx` must never precede `start_idx`, or the slice below panics
+        // ("slice index starts at N but ends at M"). A model can request an
+        // inverted or out-of-range window (e.g. line_start=161 on a 10-line
+        // file); clamp it to an empty range rather than crashing the agent.
+        let end_idx = line_end.min(lines.len()).max(start_idx);
 
         let mut output = String::new();
         for (i, line) in lines[start_idx..end_idx].iter().enumerate() {
@@ -1676,6 +1680,37 @@ mod tests {
             .await
             .unwrap();
         assert!(result.contains("Hello, World!"));
+    }
+
+    #[tokio::test]
+    async fn test_file_read_out_of_range_lines_does_not_panic() {
+        // Regression: a model can request a line window whose start is past the
+        // end of the file (e.g. line_start=161 on a 10-line file). Previously
+        // `lines[start_idx..end_idx]` panicked with "slice index starts at 160
+        // but ends at 10", killing the agent turn. It must now return an empty
+        // (or graceful) result instead.
+        let (_dir, workspace) = setup();
+        tokio::fs::write(workspace.join("short.txt"), "a\nb\nc\n")
+            .await
+            .unwrap();
+
+        let read_tool = FileReadTool::new(workspace);
+        // start past EOF, end before start → must not panic.
+        let result = read_tool
+            .execute(json!({"path": "short.txt", "line_start": 161, "line_end": 10}))
+            .await
+            .expect("out-of-range read must not error");
+        // With an empty selected range the tool reports the empty-file sentinel.
+        assert_eq!(result, "(empty file)");
+
+        // A normal sub-range still works.
+        let ok = read_tool
+            .execute(json!({"path": "short.txt", "line_start": 2, "line_end": 3}))
+            .await
+            .unwrap();
+        assert!(ok.contains("b"));
+        assert!(ok.contains("c"));
+        assert!(!ok.contains(" a\n") && !ok.contains("| a"));
     }
 
     #[tokio::test]
