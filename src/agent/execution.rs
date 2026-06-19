@@ -211,7 +211,7 @@ impl AgentExecutor {
                 model: self.config.model.clone(),
                 messages,
                 temperature: self.config.temperature,
-                max_tokens: Some(4096),
+                max_tokens: Some(self.config.max_output_tokens),
                 stop: vec![],
                 stream: false,
                 tools: if forced_final {
@@ -385,7 +385,7 @@ impl AgentExecutor {
                 model: self.config.model.clone(),
                 messages,
                 temperature: self.config.temperature,
-                max_tokens: Some(4096),
+                max_tokens: Some(self.config.max_output_tokens),
                 stop: vec![],
                 stream: true,
                 tools: if forced_final {
@@ -486,11 +486,29 @@ impl AgentExecutor {
 
             for call in &tool_calls {
                 on_event(AgentEvent::ToolCall { call: call.clone() });
+                // Supervision visibility: log each tool call's name + a short
+                // arg preview so a stalled agent can be diagnosed (e.g. files
+                // not landing because a shell command is malformed). Gated on
+                // BXNODE_TOOL_TRACE=1 so normal runs stay quiet.
+                if std::env::var("BXNODE_TOOL_TRACE").as_deref() == Ok("1") {
+                    let args = call.input.to_string();
+                    let preview: String = args.chars().take(220).collect();
+                    eprintln!("[tooltrace] CALL {} args={}", call.name, preview);
+                }
             }
 
             let results = self.tools.execute_all(&tool_calls).await;
 
             for result in &results {
+                if std::env::var("BXNODE_TOOL_TRACE").as_deref() == Ok("1") {
+                    let preview: String = result.content.chars().take(280).collect();
+                    eprintln!(
+                        "[tooltrace] RESULT call={} {}{}",
+                        result.tool_call_id,
+                        if result.success { "" } else { "ERROR " },
+                        preview
+                    );
+                }
                 on_event(AgentEvent::ToolResult {
                     result: result.clone(),
                 });

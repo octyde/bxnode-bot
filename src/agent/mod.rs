@@ -114,6 +114,15 @@ pub struct AgentConfig {
     #[serde(default = "default_max_context_tokens")]
     pub max_context_tokens: u32,
 
+    /// Maximum OUTPUT tokens per model turn (the `max_tokens` request field).
+    /// Must be large enough for a reasoning model (e.g. GLM-5.2) to emit its
+    /// `reasoning_content` AND still produce tool calls / text in the same
+    /// turn. Too small (the old hardcoded 4096) made the model spend the whole
+    /// budget on reasoning, hit `finish_reason: length`, and end the turn with
+    /// ZERO tool calls — so an agent asked to write files just stalled.
+    #[serde(default = "default_max_output_tokens")]
+    pub max_output_tokens: u32,
+
     /// Temperature
     #[serde(default)]
     pub temperature: Option<f32>,
@@ -121,6 +130,10 @@ pub struct AgentConfig {
 
 fn default_max_context_tokens() -> u32 {
     128_000
+}
+
+fn default_max_output_tokens() -> u32 {
+    16_384
 }
 
 impl Default for AgentConfig {
@@ -132,6 +145,7 @@ impl Default for AgentConfig {
             model: "anthropic/claude-3-opus".to_string(),
             tools: vec![],
             max_context_tokens: default_max_context_tokens(),
+            max_output_tokens: default_max_output_tokens(),
             temperature: None,
         }
     }
